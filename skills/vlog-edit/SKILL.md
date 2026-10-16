@@ -86,7 +86,7 @@ Keep each ffmpeg call small: audio is mixed in Python and loudness-normalised on
 
 ## Publishing
 
-The public copy lives in its own repo (`~/Documents/vlog-edit-skill`, own history). After changing the skill, docs or scripts: `python3 scripts/publish.py --push`. It copies an allow-list only (skill, docs, scripts, fonts + licences, `publish/README.md`); `projects/` never goes out (faces in contact sheets, private transcripts, local paths), and it refuses to publish if a file contains a local path, the user name or the git e-mail.
+The public copy lives in its own repo (`~/Documents/vlog-edit-skill`, own history) → github.com/xingtongtony/vlog-edit-skill (private for now; the user decides when it goes public). After changing the skill, docs or scripts: `python3 scripts/publish.py --push`. It copies an allow-list only (skill, docs, scripts, fonts + licences, `publish/README.md`); `projects/` never goes out (faces in contact sheets, private transcripts, local paths), and it refuses to publish if a file contains a local path, the user name or the git e-mail.
 
 ## Asking the user
 
