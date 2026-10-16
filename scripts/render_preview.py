@@ -445,7 +445,14 @@ def main():
         json.dump(voice_db, open(out + '.voice.json', 'w'))
         mix = mix + music * duck[:, None]
         wavfile.write(f'{tmp}/mix.wav', SR, (np.clip(mix, -1, 1) * 32767).astype(np.int16))
-        run([FF, '-y', '-i', f'{tmp}/mix.wav', '-af', f'loudnorm=I=-14:TP=-1.5:LRA=11,aresample={SR},alimiter=limit=0.79:level=false', '-c:a', 'pcm_f32le', f'{tmp}/final.wav'])
+        # two-pass loudness: measure, then one linear gain (no pumping) + limiter. The old one-pass dynamic loudnorm
+        # followed by the limiter landed anywhere from -16.6 to -16.2 LUFS and once fell outside the check window.
+        r = subprocess.run([FF, '-hide_banner', '-i', f'{tmp}/mix.wav', '-af', 'loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json',
+                            '-f', 'null', '-'], capture_output=True, text=True).stderr
+        ms = json.loads(r[r.rindex('{'):r.rindex('}') + 1])
+        ln = (f"loudnorm=I=-14:TP=-1.5:LRA=11:measured_I={ms['input_i']}:measured_TP={ms['input_tp']}:measured_LRA={ms['input_lra']}"
+              f":measured_thresh={ms['input_thresh']}:offset={ms['target_offset']}:linear=true")
+        run([FF, '-y', '-i', f'{tmp}/mix.wav', '-af', f'{ln},aresample={SR},alimiter=limit=0.79:level=false', '-c:a', 'pcm_f32le', f'{tmp}/final.wav'])
         run([FF, '-y', '-i', f'{tmp}/video.mp4', '-i', f'{tmp}/final.wav', '-map', '0:v', '-map', '1:a', '-c:v', 'copy',
              '-c:a', 'aac_at', '-b:a', '256k', '-t', f'{total:.3f}', '-movflags', '+faststart', out])   # 192k AAC overshot the peak by 2.5 dB
     json.dump([{'shot': i, 'clip': s['clip'], 'at': tl[i], 'dur': round((s['out'] - s['in']), 3), 'note': s.get('note', '')} for i, s in enumerate(shots)],

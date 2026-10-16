@@ -75,7 +75,7 @@ Monplaisir（尤克里里）和 John Bartmann（水下氛围）的这几张专�
 | MfC: Peaceful Background Acoustic | 4.6% | 28% / 2095 Hz | 大调 | 水下训练 |
 | MfC: Upbeat Inspiring Folk Acoustic Guitar | 5.5% | 17% / 1316 Hz | 大调 | 最后一潜 |
 | Monplaisir: Je voudrais être un pigeon | 7.1% | 2% / 1093 Hz | 大调 | 浮潜 |
-| Monplaisir: On est bien, là | 10.6% | 31% / 1859 Hz | 大调 | Momo |
+| ~~Monplaisir: On est bien, là~~ | 10.6% | 31% / 1859 Hz | 大调 | **不用：失真摇滚**（密度 0.88、高频 4.7%），用户说像重金属 |
 | Monplaisir: Sincere Love / First / Red Hair Blue Sky / Time Gap / Stay Quiet | 3–10% | — | 多为大调 | 陆地、日常 |
 | Music for Creators: Happy Feel Good Acoustic Pop | 8% | — | 大调 | 轻快的下午 |
 | Music for Creators: Summer Tropical House | 9% | — | 小调 | 只用于开场和结尾呼应 |

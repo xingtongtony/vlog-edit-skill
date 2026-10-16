@@ -26,6 +26,9 @@ LOOKS = {
     },
     'none': {},
 }
+# same look without the moving grain: random per-frame noise is what the encoder cannot compress (a 14 min cut was
+# 1.7 GB at 16 Mbps), and the platforms' own re-encode turns it into blocks anyway
+LOOKS['film_clean'] = {k: v for k, v in LOOKS['film'].items() if k != 'grain'}
 
 def frames(path, times, w=480):
     """Decode a few frames as float RGB arrays (0..1)."""

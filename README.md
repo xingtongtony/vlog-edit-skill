@@ -18,6 +18,7 @@ A Claude Code skill that turns raw travel footage (drone, action cam, phone) int
 - **渲染**：1080p，按素材统一调色（含水下校正），烧录字幕、片名和章节卡，加漏光转场；照片带快门声；配乐按人声自动压低
 - **自检**：画面帧数、剪辑点、口播同步、人声是否高过音乐、有没有静音段、响度和峰值
 - **选歌**：只用 CC0 / CC BY 的免费音乐，先测量鼓点能量、低频占比、明亮度和调式再挑
+- **导出剪映草稿**（剪映专业版 Mac 11.6 实测可用）：每个镜头提前调好色并留出前后余量，字幕和标题直接用成片里的图片（另附 SRT 方便改字），音乐先统一好响度、说话处带压低关键帧，照片带推近和快门声，漏光用“滤色”叠加。打开就和成片一样，同时保留剪辑点可调
 
 剪辑方法和踩过的坑都写在 `docs/` 里。它们是在一支真实的旅行片上，按片主的反馈一轮一轮改出来的。
 
@@ -32,6 +33,7 @@ A Claude Code skill that turns raw travel footage (drone, action cam, phone) int
 | `docs/footage-sources.md` | 免费视频素材，以及哪些转场用代码生成 |
 | `docs/workflow.md` | 和片主约定的剪辑流程 |
 | `scripts/` | skill 用到的脚本（入口见 SKILL.md） |
+| `scripts/export_jianying.py` | 把剪辑表导出成剪映草稿。导出前先退出剪映（⌘Q）。Mac App Store 版剪映有沙盒，素材会放进 `~/Movies/JianyingPro/Claude素材/` |
 | `fonts/` | 字幕和标题字体，均为 SIL OFL 开源许可，许可证在 `fonts/licenses/` |
 
 ## 安装
@@ -40,8 +42,8 @@ A Claude Code skill that turns raw travel footage (drone, action cam, phone) int
 
 ```bash
 brew install ffmpeg
-pip3 install mlx-whisper pillow numpy scipy
-python3 -m venv ~/.venvs/tts && ~/.venvs/tts/bin/pip install librosa opencv-python-headless numpy
+pip3 install mlx-whisper pillow numpy scipy pyJianYingDraft
+python3 -m venv ~/.venvs/tts && ~/.venvs/tts/bin/pip install librosa opencv-python-headless numpy pillow
 git clone <this repo> ~/Documents/vlog-editing
 ln -s ~/Documents/vlog-editing/skills/vlog-edit ~/.claude/skills/vlog-edit
 ```

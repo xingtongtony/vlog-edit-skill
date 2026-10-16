@@ -21,6 +21,7 @@ def hallucination(seg):
     if seg.get('no_speech_prob', 0) > 0.6 and seg.get('avg_logprob', 0) < -0.8: return True
     if seg.get('compression_ratio', 0) > 2.4: return True                # "pertpertpert…", "蛮蛮蛮…"
     if re.fullmatch(r'(.{1,4}?)\1{4,}', re.sub(r'\W', '', t)): return True  # short token repeated
+    if re.fullmatch(r'((sh+|s+h+|hm+|mm+|uh+|ah+|oh+|hh+)[.!?,\s]*)+', t, re.I): return True   # regulator breathing heard as "Shhh."
     return False
 
 def fmt(s): return f'{int(s // 60)}:{s % 60:04.1f}'
