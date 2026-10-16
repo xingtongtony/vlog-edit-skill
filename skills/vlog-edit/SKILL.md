@@ -78,6 +78,10 @@ See the docstring of `scripts/render_preview.py`. Subtitles reference a shot and
 
 Keep each ffmpeg call small: audio is mixed in Python and loudness-normalised on its own; overlays are one pass; leaks are another pass; then mux with stream copy. Two silent failures came from cramming everything into one graph (24 s of audio dropped; leaks never drawn).
 
+## Publishing
+
+The public copy lives in its own repo (`~/Documents/vlog-edit-skill`, own history). After changing the skill, docs or scripts: `python3 scripts/publish.py --push`. It copies an allow-list only (skill, docs, scripts, fonts + licences, `publish/README.md`); `projects/` never goes out (faces in contact sheets, private transcripts, local paths), and it refuses to publish if a file contains a local path, the user name or the git e-mail.
+
 ## Asking the user
 
 Write options from a neutral point of view ("我来挑" / "你来挑"), never "你自己挑一首给我" — it was read both ways and cost a round trip.
