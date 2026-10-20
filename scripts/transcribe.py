@@ -18,6 +18,7 @@ def hallucination(seg):
     t = seg['text'].strip()
     if not t: return True
     if any(b.lower() in t.lower() for b in BLACKLIST) and len(t) < 30: return True
+    if re.search(r'优优独播|YoYo Television|字幕由|请不吝点赞', t, re.I): return True     # long credit lines over pure music
     if seg.get('no_speech_prob', 0) > 0.6 and seg.get('avg_logprob', 0) < -0.8: return True
     if seg.get('compression_ratio', 0) > 2.4: return True                # "pertpertpert…", "蛮蛮蛮…"
     if re.fullmatch(r'(.{1,4}?)\1{4,}', re.sub(r'\W', '', t)): return True  # short token repeated

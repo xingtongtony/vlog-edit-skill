@@ -172,28 +172,25 @@ def make_leak(path, dur, fps, seed=0, warmth=1.0, w=480, h=270):
             Image.fromarray(np.dstack([img * 255, a * 255]).astype(np.uint8)).save(f'{td}/f{i:03d}.png')
         run([FF, '-y', '-framerate', str(fps), '-i', f'{td}/f%03d.png', '-c:v', 'qtrle', '-pix_fmt', 'argb', path])
 
-def compose_photo(path, W, H, out, caption=None, border=0.012):
-    """Still photo for video: blurred, darkened cover of itself behind; the photo itself fitted with a thin white border
-    and a soft shadow (portrait photos stay whole). Rendered at 2x so the slow push-in stays sharp."""
+def compose_photo(path, W, H, out, caption=None):
+    """Still photo for video: the whole photo fitted to the frame on black (portrait photos get black sides) - no blurred
+    backdrop, border or shadow. The user's choice: after v7 they swapped every framed photo for the plain one in
+    Jianying. Rendered at 2x so the slow push-in stays sharp."""
     from PIL import ImageOps
     W2, H2 = W * 2, H * 2
     im = ImageOps.exif_transpose(Image.open(path)).convert('RGB')
     lum = np.asarray(im.convert('L').resize((64, 64)), np.float32).mean()
     if lum < 45:   # night photo (fireflies, stars): lift the shadows so the trees and the light points read on screen
         im = Image.eval(ImageOps.autocontrast(im.filter(ImageFilter.MedianFilter(5)), cutoff=1), lambda v: int(255 * (v / 255) ** 0.85))
-    bg = ImageOps.fit(im, (W2, H2)).filter(ImageFilter.GaussianBlur(H2 / 40))
-    bg = Image.eval(bg, lambda v: int(v * 0.55))
-    maxh, maxw = H2 * 0.82, W2 * 0.82
-    sc = min(maxh / im.height, maxw / im.width); fg = im.resize((round(im.width * sc), round(im.height * sc)), Image.LANCZOS)
-    b = round(H2 * border); framed = ImageOps.expand(fg, border=b, fill=(250, 248, 242))
-    x, y = (W2 - framed.width) // 2, (H2 - framed.height) // 2 - (round(H2 * 0.02) if caption else 0)
-    sh = Image.new('L', (W2, H2), 0); ImageDraw.Draw(sh).rectangle((x + 10, y + 18, x + framed.width + 10, y + framed.height + 18), fill=150)
-    bg.paste(Image.new('RGB', (W2, H2), (0, 0, 0)), (0, 0), sh.filter(ImageFilter.GaussianBlur(H2 / 90)))
-    bg.paste(framed, (x, y))
-    if caption:
+    sc = min(W2 / im.width, H2 / im.height); fg = im.resize((round(im.width * sc), round(im.height * sc)), Image.LANCZOS)
+    bg = Image.new('RGB', (W2, H2), (0, 0, 0)); bg.paste(fg, ((W2 - fg.width) // 2, (H2 - fg.height) // 2))
+    if caption:    # on the photo near the bottom, with a soft dark halo instead of a box
         f = ImageFont.truetype(os.path.join(ROOT, 'fonts', 'Montserrat[wght].ttf'), round(H2 * 0.016))
-        d = ImageDraw.Draw(bg); tw = spaced_w(caption, f, H2 * 0.006)
-        spaced(d, (W2 - tw) / 2, y + framed.height + H2 * 0.022, caption, f, (235, 232, 225), H2 * 0.006)
+        tw = spaced_w(caption, f, H2 * 0.006); x, y = (W2 - tw) / 2, H2 * 0.90
+        halo = Image.new('L', (W2, H2), 0); spaced(ImageDraw.Draw(halo), x, y, caption, f, 255, H2 * 0.006)
+        halo = halo.filter(ImageFilter.MaxFilter(2 * round(H2 / 300) + 1)).filter(ImageFilter.GaussianBlur(H2 / 120))
+        bg.paste(Image.new('RGB', (W2, H2), (0, 0, 0)), (0, 0), halo.point(lambda v: min(255, int(v * 1.4))))
+        spaced(ImageDraw.Draw(bg), x, y, caption, f, (240, 237, 230), H2 * 0.006)
     bg.save(out, quality=95)
 
 def shutter(sr):
@@ -329,7 +326,7 @@ def main():
             def source(sh, a0, dur):
                 """(input args, filter chain) giving `dur` seconds of shot `sh` from source time a0, graded, at W x H."""
                 if sh.get('photo'):
-                    png = f"{tmp}/photo_{os.path.basename(sh['photo'])}.jpg"
+                    png = f"{tmp}/photo_plain_{os.path.basename(sh['photo'])}.jpg"
                     if not os.path.exists(png): compose_photo(sh['photo'], W, H, png, sh.get('caption'))
                     full = max(0.5, sh['out'] - sh['in']); k = round(full * fps)
                     z = f"zoompan=z='1+0.045*(on+{round(a0 * fps)})/{k}':d=1:s={W}x{H}:fps={fps}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"

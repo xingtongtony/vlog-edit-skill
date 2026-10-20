@@ -1,13 +1,15 @@
 """Export an EDL as a Jianying (剪映专业版, Mac) draft that looks and sounds like the rendered cut, and stays editable.
 
-usage: python3 export_jianying.py <edl.json> "<draft name>" [--replace] [--workers 6]
+usage: python3 export_jianying.py <edl.json> "<draft name>" [--replace] [--remove "<old draft name>"] [--workers 6]
+--remove: once Jianying has quit, the old version's draft goes to the Trash and leaves the draft list (each cut
+replaces the previous one; its media folder is cleared by hand - see SKILL.md).
 Needs pip3 install pyJianYingDraft. Quit Jianying first (⌘Q): it locks an open draft and rewrites the draft list
 (root_meta_info.json) on quit.
 
 Jianying cannot do what the renderer does, so everything Jianying has no equivalent for is made here first:
   画面          each shot pre-graded (film look + per-clip underwater correction) with 2 s handles on both sides, so the
                 cut point can still be moved in Jianying; dissolves are Jianying 叠化
-  照片          the composed photo (blurred backdrop, white border) with a 4.5 % push-in keyframe, 闪白 into it, shutter
+  照片          the plain photo fitted on black (no backdrop / border, the user's choice) with a 4.5 % push-in keyframe, 闪白 into it, shutter
                 sound on the 音效 track
   漏光          the procedural light leak, pre-multiplied on black, on its own track in 滤色 (screen) blend mode
   字幕/标题      the exact PNGs the renderer burns in (size, translucent box, round corners, fonts, positions), with the
@@ -97,6 +99,7 @@ def main():
 
     while subprocess.run(['pgrep', '-f', 'Contents/MacOS/VideoFusion-macOS$'], capture_output=True).stdout.strip():
         print('waiting for Jianying to quit (⌘Q) before writing the draft ...', flush=True); time.sleep(10)
+    if '--remove' in sys.argv: remove_draft(sys.argv[sys.argv.index('--remove') + 1])
     folder = jy.DraftFolder(ROOT)
     script = folder.create_draft(name, W, H, fps=fps, allow_replace='--replace' in sys.argv)
     script.append_tracks([jy.TrackSpec(TrackType.video, '画面'), jy.TrackSpec(TrackType.video, '漏光'),
@@ -112,7 +115,7 @@ def main():
     for i, s in enumerate(shots):
         a, d = us(tl[i]), us(ends[i]) - us(tl[i])
         if s.get('photo'):
-            png = out('photos', os.path.splitext(os.path.basename(s['photo']))[0] + ('_cap' if s.get('caption') else '') + '.jpg')
+            png = out('photos', os.path.splitext(os.path.basename(s['photo']))[0] + ('_cap' if s.get('caption') else '') + '_plain.jpg')
             if not os.path.exists(png): compose_photo(s['photo'], W, H, png, s.get('caption'))
             seg = jy.VideoSegment(png, jy.Timerange(a, d), volume=0.0)
             seg.add_keyframe(KeyframeProperty.uniform_scale, 0, 1.0); seg.add_keyframe(KeyframeProperty.uniform_scale, d, 1.045)
@@ -198,6 +201,20 @@ def main():
     script.save()
     register(name)
     print('media in', out())
+
+def remove_draft(name):
+    """Old version of the cut: draft folder to the Trash (recoverable), entry out of root_meta_info.json. Only while
+    Jianying is closed - it rewrites the draft list on quit."""
+    p = os.path.join(ROOT, name)
+    if os.path.isdir(p):
+        dst = os.path.join(os.path.expanduser('~/.Trash'), f'{name} {time.strftime("%H.%M.%S")}')
+        shutil.move(p, dst); print('old draft moved to the Trash:', dst)
+    rp = os.path.join(ROOT, 'root_meta_info.json'); root = json.load(open(rp))
+    keep = [x for x in root['all_draft_store'] if x.get('draft_name') != name]
+    if len(keep) != len(root['all_draft_store']):
+        shutil.copy(rp, rp + f'.bak-{int(time.time())}')
+        root['all_draft_store'] = keep; root['draft_ids'] = len(keep)
+        json.dump(root, open(rp, 'w'), ensure_ascii=False); print('old draft removed from the draft list:', name)
 
 def register(name):
     """Put the draft into Jianying's draft list (root_meta_info.json), the way the app lists its own drafts."""

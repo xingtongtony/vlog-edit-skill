@@ -14,13 +14,58 @@
     b = Builder(project, times={'c066': '2026-09-30T15:35'})
     b.begin_teaser(); ...; b.end_teaser()
     b.talk('c001', [(40.3, 47.1, ['line', 'line'])])
-    b.vo(['line', 'line'], broll=[('c007', 2.0), ('c008', 1.0)], xfade=0.6)
+    b.vo('一整段旁白，带标点。一口气读完。', broll=[('c007', 2.0), ('c008', 1.0)], xfade=0.6)
     b.photo('p084', 3.0, caption='TARSIER · LOBOC')
     b.save('edl/full.json')
 """
-import json, os, re, datetime
+import json, math, os, re, datetime
 
-def vo_duration(text): return round(len(re.sub(r'\s', '', text)) / 4.2 + 0.7, 2)
+# Narration pacing, measured 2026-10-19: the user reads at 4.0-4.6 syllables/s; a reference creator's narration runs
+# 4.7/s overall with 0.4-0.6 s between sentences. The old timing (chars/4.2 + 0.7 s per line, + 0.6 s between lines)
+# left the user waiting 1-2.6 s for every next subtitle while recording.
+VO_RATE = 4.5                                   # syllables per second of speech
+VO_PAUSE = {'sentence': 0.45, 'semi': 0.3, 'clause': 0.15, 'split': 0.0}
+SUB_MAX = 16                                    # display width of one subtitle line (CJK 1, Latin letter 0.55)
+
+def syllables(text):
+    """Spoken length: a CJK character is 1, a Latin word 2, a number one per digit ('30' is 三十)."""
+    return (len(re.findall(r'[一-鿿]', text)) + 2 * len(re.findall(r'[A-Za-z]+', text))
+            + len(re.findall(r'\d', text)))
+
+def vo_duration(text): return round(max(0.6, syllables(text) / VO_RATE), 2)
+
+def _width(s): return sum(0.55 if c.isascii() else 1 for c in s if not c.isspace())
+
+def _display(s): return re.sub(r'\s+', ' ', re.sub(r'[，,、；;：:——“”"]', ' ', s)).strip()
+
+def _halve(clause):
+    """Cut a clause wider than SUB_MAX into even pieces, never inside a Latin word or a number."""
+    n = math.ceil(_width(clause) / SUB_MAX); target = _width(clause) / n; out, cur = [], ''
+    for i, c in enumerate(clause):
+        if cur and len(out) < n - 1 and _width(cur) >= target and not (cur[-1].isascii() and cur[-1].isalnum() and c.isascii() and c.isalnum()):
+            out.append(cur); cur = ''
+        cur += c
+    return out + [cur]
+
+def split_paragraph(text):
+    """A narration paragraph -> subtitle lines [(display text, pause after)]. Sentences end at 。！？…; a sentence
+    wider than SUB_MAX breaks at ，、：—, and a still-wide clause in even pieces; ； always ends a line. Display text has
+    no punctuation."""
+    parts = re.split(r'([。！？!?…]+|[，,、；;：:]|——)', text.strip())
+    clauses = []                                # (text, pause kind after it)
+    for k in range(0, len(parts), 2):
+        t, d = parts[k].strip(), parts[k + 1] if k + 1 < len(parts) else '。'
+        if not t: continue
+        kind = 'sentence' if re.fullmatch(r'[。！？!?…]+', d) else 'semi' if d in '；;' else 'clause'
+        pieces = _halve(t) if _width(t) > SUB_MAX else [t]
+        clauses += [(p.strip(), 'split') for p in pieces[:-1]] + [(pieces[-1].strip(), kind)]
+    lines, cur, cur_kind = [], '', None
+    for t, kind in clauses:
+        if cur and (cur_kind in ('sentence', 'semi') or _width(cur + t) + 1 > SUB_MAX):
+            lines.append((cur, cur_kind)); cur = ''
+        cur = f'{cur} {t}' if cur else t; cur_kind = kind
+    if cur: lines.append((cur, cur_kind))
+    return [(_display(t), VO_PAUSE[kind]) for t, kind in lines]
 
 class EditError(Exception): pass
 
@@ -71,7 +116,8 @@ class Builder:
         if t is None: self.warnings.append(f'{clip}: no timestamp, order not checked'); return
         if self.last_t and t < self.last_t - datetime.timedelta(minutes=2) and not back:
             raise EditError(f'{clip} @{t:%m-%d %H:%M} goes back in time (previous shot {self.last_t:%m-%d %H:%M})')
-        self.last_t = max(self.last_t or t, t)
+        if not back: self.last_t = max(self.last_t or t, t)   # a shot placed out of order (back=True) does not move the clock,
+                                                               # so the shots after it are still checked against the main line
 
     # ---------------- shots ----------------
     def allow_motion(self, clip, a, b, why):
@@ -170,28 +216,49 @@ class Builder:
         return first
 
     # ---------------- narration over B-roll / photos ----------------
-    def vo(self, lines, broll, gap=0.6, lead=0.6, tail=1.0, xfade=0, beds=None):
-        """Narration lines laid over B-roll items: (clip, start[, audio]) or ('photo', pid[, caption]).
-        The block lasts as long as the lines need plus air; each item gets an equal share (at least 2.2 s)."""
-        need = lead + sum(vo_duration(l) for l in lines) + gap * (len(lines) - 1) + tail
-        share = max(2.2, need / len(broll))
+    def vo(self, paras, broll, gap=0.6, lead=0.6, tail=1.0, xfade=0, beds=None, back=False, motion_ok=None):
+        """Narration laid over B-roll items: (clip, start[, audio[, seconds]]) or ('photo', pid[, caption]). An item
+        with `seconds` keeps that length (a clip with only a short usable window); the others share the rest. A start of
+        'next' continues the take where the previous item ended.
+        `paras` is one paragraph (str) or a list of them, written with punctuation the way the user will say it in one
+        breath; each is cut into short subtitle lines timed at the user's pace (VO_RATE, VO_PAUSE) and `gap` separates
+        paragraphs. The block lasts as long as the speech needs plus air; each item gets an equal share (at least 2.2 s).
+        A subtitle stays up through the pause after it, so the box does not flicker between lines of one paragraph.
+        `back` / `motion_ok` apply to every B-roll item (e.g. to keep an order or a shot the user chose in Jianying)."""
+        if isinstance(paras, str): paras = [paras]
+        lines = []                              # (display text, speech seconds, pause after, paragraph id, paragraph)
+        for p in paras:
+            pid = sum(1 for v in self.e['vo'] if 'para_text' in v) + len({l[3] for l in lines})
+            split = split_paragraph(p)
+            for j, (text, pause) in enumerate(split):
+                last = j == len(split) - 1
+                lines.append((text, vo_duration(text), gap if last else pause, pid, p if j == 0 else None))
+        need = lead + sum(d + a for _, d, a, _, _ in lines) - lines[-1][2] + tail
+        fixed = [it[3] if it[0] != 'photo' and len(it) > 3 else None for it in broll]   # (clip, start, audio, seconds)
+        free = sum(1 for f in fixed if f is None)
+        share = max(2.2, (need - sum(f for f in fixed if f)) / free) if free else 0
         first = None
         for item in broll:
             extra = {'xfade': xfade} if xfade and first is None else {}
             if item[0] == 'photo':
                 bed = beds[broll.index(item)] if beds else None
-                i = self.photo(item[1], share, caption=item[2] if len(item) > 2 else None, bed=bed, **extra)
+                i = self.photo(item[1], share, caption=item[2] if len(item) > 2 else None, bed=bed, back=back, **extra)
             else:
                 clip, a = item[0], item[1]; audio = item[2] if len(item) > 2 else 'ambient'
-                if a is None: a = self.steady(clip, share)
-                i = self.shot(clip, a, a + share, audio=audio, note='VO B-roll', **extra)
+                d = item[3] if len(item) > 3 else share
+                if a == 'next': a = self.e['shots'][-1]['out']          # continue the take of the previous item
+                elif a is None: a = self.steady(clip, d)
+                i = self.shot(clip, a, a + d, audio=audio, note='VO B-roll', back=back, motion_ok=motion_ok, **extra)
             first = i if first is None else first
         t = lead; durs = [self.dur(k) for k in range(first, self.n)]
-        for line in lines:
+        for text, speech, pause, pid, para in lines:
             acc, k = 0.0, 0
             while k < len(durs) - 1 and acc + durs[k] <= t: acc += durs[k]; k += 1
-            self.e['vo'].append({'shot': first + k, 'at': round(t - acc, 2), 'text': line, 'dur': vo_duration(line)})
-            t += vo_duration(line) + gap
+            shown = speech + (pause if pause < gap else 0.3)
+            v = {'shot': first + k, 'at': round(t - acc, 2), 'text': text, 'dur': round(shown, 2), 'speech': speech, 'para': pid}
+            if para: v['para_text'] = para
+            self.e['vo'].append(v)
+            t += speech + pause
         return first
 
     # ---------------- graphics / music ----------------

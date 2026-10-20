@@ -15,8 +15,15 @@ def main():
     shots = edl['shots']; rows = []
     for s in edl['subtitles']:
         rows.append((tl[s['shot']] + s['from'] - shots[s['shot']]['in'], 1, f"> {s['text']}"))
+    paras = {}                                  # paragraph id -> (start, paragraph text, end of speech)
     for v in edl['vo']:
-        rows.append((tl[v['shot']] + v['at'], 1, f"**{v['text']}** （约 {v['dur']:.1f} 秒）"))
+        a = tl[v['shot']] + v['at']
+        if 'para' not in v:                     # EDLs from before paragraph narration: one row per line
+            rows.append((a, 1, f"**{v['text']}** （约 {v['dur']:.1f} 秒）")); continue
+        s, text, _ = paras.get(v['para'], (a, v.get('para_text', v['text']), a))
+        paras[v['para']] = (s, text, a + v.get('speech', v['dur']))
+    for s, text, e in paras.values():
+        rows.append((s, 1, f"**{text}** （一口气读完，约 {e - s:.0f} 秒）"))
     for c in edl['cards']:
         if c.get('kind') == 'chapter':
             rows.append((tl[c['shot']], 0, f"\n## {c.get('kicker', '')} · {c['text']}" + (f"（{c['sub']}）" if c.get('sub') else '') + '\n'))
@@ -26,8 +33,9 @@ def main():
     rows.sort(key=lambda r: (r[0], r[1]))
     with open(out, 'w') as f:
         f.write(f"# {title}\n\n对照成片 `{os.path.basename(mp4)}` 录音。**加粗**的是要你录的旁白（片子里先以字幕显示，背景音乐已经压低）；"
-                "引用是片子里你自己的现场口播，不用录。\n\n录法：照稿一句一句读，说错了停一两秒从这句开头重来；手机录就行。"
-                "每句后面是建议时长，读得比它长没关系，我会让画面跟着你的节奏。\n\n")
+                "引用是片子里你自己的现场口播，不用录。\n\n录法：一段一个录音，看着这份稿子一口气读完，句子之间正常换气就行，"
+                "不用等画面上的字幕；说错了停一两秒，从这一句开头重来。手机录就行。"
+                "每段后面是按正常语速估的时长，读得快慢都没关系，我会按你的录音重新对齐字幕和画面。\n\n")
         for t, kind, text in rows:
             f.write(text + '\n' if kind == 0 else f"- `{tc(t)}` {text}\n")
     print(out, sum(1 for r in rows if r[2].startswith('**')), 'narration lines')
