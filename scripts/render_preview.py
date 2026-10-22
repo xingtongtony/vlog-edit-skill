@@ -103,28 +103,28 @@ def card_png(card, W, H, path):
             except Exception: pass
         return f
     cream = (255, 252, 245, 255)
-    if kind == 'title':      # script Latin name + brush Chinese name + tracked caps line (studied: Links, Char)
+    if kind == 'title':      # brush-script Latin name + marker-hand Chinese name + tracked caps line (young type: no calligraphy)
         def fn(d, fill):
-            big = ft('PinyonScript-Regular.ttf', 230); w = d.textlength(card.get('latin', 'Bohol'), font=big); x = (W - w) / 2; y = H * card.get('y', 0.30)
+            big = ft('KaushanScript-Regular.ttf', 200); w = d.textlength(card.get('latin', 'Bohol'), font=big); x = (W - w) / 2; y = H * card.get('y', 0.30)
             d.text((x, y), card.get('latin', 'Bohol'), font=big, fill=fill)
-            d.text((x + w - 40 * s, y + 230 * s), text, font=ft('MaShanZheng-Regular.ttf', 96), fill=fill)
-            cap = ft('Montserrat[wght].ttf', 22, 500); sub = card.get('sub', '')
+            d.text((x + w - 60 * s, y + 236 * s), text, font=ft('LXGWMarkerGothic-Regular.ttf', 92), fill=fill)
+            cap = ft('Outfit[wght].ttf', 22, 400); sub = card.get('sub', '')
             spaced(d, (W - spaced_w(sub, cap, 8 * s)) / 2, y + 380 * s, sub, cap, fill, 8 * s)
         im = shadowed(fn, 10 * s)
     elif kind == 'end':      # script line + small caps
         def fn(d, fill):
-            big = ft('PinyonScript-Regular.ttf', 150); w = d.textlength(text, font=big); y = H * card.get('y', 0.36)
+            big = ft('KaushanScript-Regular.ttf', 130); w = d.textlength(text, font=big); y = H * card.get('y', 0.36)
             d.text(((W - w) / 2, y), text, font=big, fill=fill)
-            cap = ft('Montserrat[wght].ttf', 22, 500); sub = card.get('sub', '')
+            cap = ft('Outfit[wght].ttf', 22, 400); sub = card.get('sub', '')
             spaced(d, (W - spaced_w(sub, cap, 8 * s)) / 2, y + 200 * s, sub, cap, fill, 8 * s)
         im = shadowed(fn, 10 * s)
-    elif kind == 'chapter':  # bottom-left: italic "Chapter One" / brush title / tracked caps line
+    elif kind == 'chapter':  # bottom-left: brush-script "Chapter One" / marker-hand title / tracked caps line
         x, y = W * 0.07, H * 0.60
         def fn(d, fill):
-            d.text((x, y), card.get('kicker', ''), font=ft('PlayfairDisplay-Italic[wght].ttf', 40, 400), fill=fill)
-            d.text((x - 4 * s, y + 52 * s), text, font=ft('MaShanZheng-Regular.ttf', 112), fill=fill)
+            d.text((x, y), card.get('kicker', ''), font=ft('KaushanScript-Regular.ttf', 44), fill=fill)
+            d.text((x - 4 * s, y + 58 * s), text, font=ft('LXGWMarkerGothic-Regular.ttf', 104), fill=fill)
             if card.get('sub'):
-                cap = ft('Montserrat[wght].ttf', 20, 500); spaced(d, x + 2 * s, y + 200 * s, card['sub'], cap, fill, 7 * s)
+                cap = ft('Outfit[wght].ttf', 20, 400); spaced(d, x + 2 * s, y + 200 * s, card['sub'], cap, fill, 7 * s)
         im = shadowed(fn, 9 * s)
     elif kind == 'label':  # small place/time stamp, bottom-left
         f = ImageFont.truetype(FONT, round(28 * s))
@@ -185,7 +185,7 @@ def compose_photo(path, W, H, out, caption=None):
     sc = min(W2 / im.width, H2 / im.height); fg = im.resize((round(im.width * sc), round(im.height * sc)), Image.LANCZOS)
     bg = Image.new('RGB', (W2, H2), (0, 0, 0)); bg.paste(fg, ((W2 - fg.width) // 2, (H2 - fg.height) // 2))
     if caption:    # on the photo near the bottom, with a soft dark halo instead of a box
-        f = ImageFont.truetype(os.path.join(ROOT, 'fonts', 'Montserrat[wght].ttf'), round(H2 * 0.016))
+        f = ImageFont.truetype(os.path.join(ROOT, 'fonts', 'Outfit[wght].ttf'), round(H2 * 0.016)); f.set_variation_by_axes([400])
         tw = spaced_w(caption, f, H2 * 0.006); x, y = (W2 - tw) / 2, H2 * 0.90
         halo = Image.new('L', (W2, H2), 0); spaced(ImageDraw.Draw(halo), x, y, caption, f, 255, H2 * 0.006)
         halo = halo.filter(ImageFilter.MaxFilter(2 * round(H2 / 300) + 1)).filter(ImageFilter.GaussianBlur(H2 / 120))

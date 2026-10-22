@@ -9,8 +9,8 @@ Before copying, every text file is scanned for local paths and personal identifi
 import glob, os, re, shutil, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ALLOW = ['skills/vlog-edit/SKILL.md', 'docs/*.md', 'scripts/*.py', 'scripts/analysis/*.py',
-         'fonts/*.ttf', 'fonts/licenses/*.txt']
+ALLOW = ['skills/vlog-edit/SKILL.md', 'docs/*.md', 'scripts/*.py', 'scripts/*.swift', 'scripts/analysis/*.py',
+         'fonts/*.ttf', 'fonts/licenses/*.txt', 'fonts/README.md', 'fonts/specimen.png']
 DENY = ['scripts/render_preview_v1.py']                      # superseded; scripts/bohol-v1/ is not in ALLOW either
 RENAME = {'publish/README.md': 'README.md', 'publish/gitignore': '.gitignore'}
 def private_pattern():
@@ -34,7 +34,7 @@ def main():
     dst = os.path.expanduser(args[0] if args else '~/Documents/vlog-edit-skill')
     fs = files(); hits = []; PRIVATE = private_pattern()
     for src in fs:
-        if src.endswith('.ttf') or src == 'scripts/publish.py': continue      # holds only the generic patterns
+        if src.endswith(('.ttf', '.png')) or src == 'scripts/publish.py': continue      # binaries; publish.py holds only the generic patterns
         for n, line in enumerate(open(os.path.join(ROOT, src), encoding='utf-8', errors='ignore'), 1):
             if PRIVATE.search(line): hits.append(f'{src}:{n}: {line.strip()[:90]}')
     if hits: sys.exit('private details found, nothing published:\n  ' + '\n  '.join(hits))

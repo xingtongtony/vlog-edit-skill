@@ -20,6 +20,7 @@ A Claude Code skill that turns raw travel footage (drone, action cam, phone) int
 - **选歌**：只用 CC0 / CC BY 的免费音乐，先测量鼓点能量、低频占比、明亮度和调式再挑
 - **导出剪映草稿**（剪映专业版 Mac 11.6 实测可用）：每个镜头提前调好色并留出前后余量，字幕和标题直接用成片里的图片（另附 SRT 方便改字），音乐先统一好响度、说话处带压低关键帧，照片带推近和快门声，漏光用“滤色”叠加。打开就和成片一样，同时保留剪辑点可调
 - **读回剪映里的修改**：剪映存盘后草稿会加密，所以拿片主从剪映导出的成片和渲染对比，找出换过的镜头（定位到原素材的第几秒）、改过的字幕、黑帧和响度，再把这些修改做回剪辑表，重新导出时不会冲掉
+- **小红书发帖**：按账号自己的封面风格做 3:4 封面：截图从原始素材取并套成片调色，用 macOS 自带的 Vision 把人物或动物抠出来压在大字前面，字体只用年轻的开源字体；配好标题、正文和话题（`docs/publishing.md`）
 
 剪辑方法和踩过的坑都写在 `docs/` 里。它们是在一支真实的旅行片上，按片主的反馈一轮一轮改出来的。
 
@@ -34,6 +35,8 @@ A Claude Code skill that turns raw travel footage (drone, action cam, phone) int
 | `docs/footage-sources.md` | 免费视频素材，以及哪些转场用代码生成 |
 | `docs/workflow.md` | 和片主约定的剪辑流程 |
 | `scripts/` | skill 用到的脚本（入口见 SKILL.md） |
+| `scripts/cover_kit.py` / `scripts/subject_mask.swift` | 小红书封面：调色截图、主体抠图、三种版式 |
+| `scripts/compare_cut.py` | 对比片主从剪映导出的成片和我们的渲染，找出改过的地方 |
 | `scripts/export_jianying.py` | 把剪辑表导出成剪映草稿。导出前先退出剪映（⌘Q）。Mac App Store 版剪映有沙盒，素材会放进 `~/Movies/JianyingPro/Claude素材/` |
 | `fonts/` | 字幕和标题字体，均为 SIL OFL 开源许可，许可证在 `fonts/licenses/` |
 
@@ -53,4 +56,4 @@ skill 默认工作区是 `~/Documents/vlog-editing/`。每次旅行在 `projects
 
 ## 字体
 
-资源圆体 Light（Resource Han Rounded）、Great Vibes、Pinyon Script、马善政楷书、志莽行书、站酷小薇、Playfair Display、Montserrat。全部是 SIL Open Font License 1.1，许可证全文在 `fonts/licenses/`。
+中文：霞鹜漫黑、站酷快乐体、悠哉字体、小赖字体、得意黑、站酷庆科黄油体、资源圆体；英文：Anton、Big Shoulders、Instrument Serif / Sans、Fredoka、Bricolage Grotesque、Kaushan Script、Outfit、Space Grotesk、Pacifico、Caveat、Permanent Marker、Lilita One、Bebas Neue 等。全部是 SIL Open Font License 1.1 或 Apache 2.0，许可证全文在 `fonts/licenses/`，目录见 `fonts/README.md`。
