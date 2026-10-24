@@ -1,6 +1,8 @@
 """Transcribe every clip that has audio, with word timestamps; drop whisper hallucinations.
 
-usage: python3 transcribe.py <project_dir> [initial prompt with place names]
+usage: python3 transcribe.py <project_dir> [initial prompt with place names] [--min SECONDS]
+  --min  skip clips shorter than this (Live Photo clips are 2-3 s each and cost ~7 s of model overhead apiece;
+         transcribe the real clips first, the rest in a second run without --min)
 Reads ingest/clips.json and ingest/audio/<id>.wav, writes ingest/transcripts/<id>.json
 (segments with words) and ingest/transcripts.md (human-readable, one block per clip).
 Run with system python3 (mlx-whisper lives in the user site; do not pass -I).
@@ -12,7 +14,7 @@ MODEL = 'mlx-community/whisper-large-v3-turbo'
 
 # Phrases whisper invents over silence, wind, bubbles or music (subtitle-credit boilerplate it was trained on)
 BLACKLIST = ('请不吝点赞', '订阅', '明镜', '点点栏目', '字幕', '作词', '作曲', '李宗盛', '优优独播', 'YoYo Television',
-             'ご視聴', '감사합니다', '谢谢大家', '谢谢观看', 'Thank you', 'Thanks for watching', '音乐')
+             'ご視聴', '감사합니다', 'Субтитры', 'DimaTorzok', '谢谢大家', '谢谢观看', 'Thank you', 'Thanks for watching', '音乐')
 
 def hallucination(seg):
     t = seg['text'].strip()
@@ -28,14 +30,17 @@ def hallucination(seg):
 def fmt(s): return f'{int(s // 60)}:{s % 60:04.1f}'
 
 def main():
-    project = sys.argv[1]
-    prompt = sys.argv[2] if len(sys.argv) > 2 else '以下是普通话的句子。'
+    args = sys.argv[1:]; min_dur = 0.0
+    if '--min' in args:
+        k = args.index('--min'); min_dur = float(args[k + 1]); del args[k:k + 2]
+    project = args[0]
+    prompt = args[1] if len(args) > 1 else '以下是普通话的句子。'
     ing = os.path.join(project, 'ingest'); out = os.path.join(ing, 'transcripts'); os.makedirs(out, exist_ok=True)
     clips = json.load(open(f'{ing}/clips.json'))
     md = []
     for k, c in enumerate(clips, 1):
         wav = f'{ing}/audio/{c["id"]}.wav'; dst = f'{out}/{c["id"]}.json'
-        if not c['audio'] or not os.path.exists(wav): continue
+        if not c['audio'] or not os.path.exists(wav) or c['duration'] < min_dur: continue
         if not os.path.exists(dst):
             import mlx_whisper
             r = mlx_whisper.transcribe(wav, path_or_hf_repo=MODEL, initial_prompt=prompt, word_timestamps=True,

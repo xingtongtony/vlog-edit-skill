@@ -1,6 +1,8 @@
 """Stage 1 of the vlog workflow: inventory, proxies, contact sheets and transcripts.
 
-usage: python3 ingest.py <project_dir> <footage_dir> [<footage_dir> ...]
+usage: python3 ingest.py <project_dir> [--tz +08:00] <footage_dir> [<footage_dir> ...]
+  --tz  local UTC offset of the trip; metadata times carrying a zone (iPhone '+0800', shared copies' UTC 'Z')
+        are converted to it, so every clip sorts on one local clock with the camera's filename stamps
 
 Writes into <project_dir>/ingest/:
   clips.json            one record per clip (path, kind, shot time, duration, size, audio)
@@ -17,7 +19,7 @@ EXT = ('.mp4', '.mov')
 
 def probe(path):
     r = json.loads(subprocess.run([FP, '-v', 'error', '-show_entries',
-        'format=duration:format_tags=creation_time,com.apple.quicktime.creationdate:stream=codec_type,width,height,r_frame_rate:stream_tags=rotate',
+        'format=duration:format_tags=creation_time,com.apple.quicktime.creationdate,com.apple.quicktime.location.ISO6709:stream=codec_type,width,height,r_frame_rate:stream_tags=rotate',
         '-of', 'json', path], capture_output=True, text=True).stdout or '{}')
     v = [s for s in r.get('streams', []) if s.get('codec_type') == 'video']
     tags = r.get('format', {}).get('tags', {})
@@ -27,15 +29,24 @@ def probe(path):
         'fps': v[0].get('r_frame_rate', '') if v else '',
         'audio': any(s.get('codec_type') == 'audio' for s in r.get('streams', [])),
         'creation': tags.get('com.apple.quicktime.creationdate') or tags.get('creation_time', ''),
+        'loc': gps(tags.get('com.apple.quicktime.location.ISO6709', '')),
     }
 
-def shot_time(name, creation):
-    """Best guess of local shooting time: filename stamp first (camera clock), then metadata."""
+def gps(iso6709):
+    m = re.match(r'([+-]\d+\.\d+)([+-]\d+\.\d+)', iso6709)
+    return [float(m.group(1)), float(m.group(2))] if m else None
+
+def shot_time(name, creation, tz=None):
+    """Best guess of local shooting time: filename stamp first (camera clock), then metadata.
+    Zoned metadata is converted to the trip's offset `tz` (a timezone) and returned naive, like the filename stamps."""
     m = re.search(r'(20\d{6})_?(\d{6})', name)
     if m: return datetime.datetime.strptime(m.group(1) + m.group(2), '%Y%m%d%H%M%S').isoformat()
     if creation:
-        try: return datetime.datetime.fromisoformat(creation.replace('Z', '+00:00')).isoformat()
-        except ValueError: pass
+        c = re.sub(r'([+-]\d\d)(\d\d)$', r'\1:\2', creation.replace('Z', '+00:00'))   # iPhone writes +0800
+        try: t = datetime.datetime.fromisoformat(re.sub(r'\.\d+(?=[+-])', '', c))
+        except ValueError: return ''
+        if t.tzinfo and tz: t = t.astimezone(tz).replace(tzinfo=None)
+        return t.isoformat(timespec='seconds')
     return ''
 
 def mtime_time(path):
@@ -65,7 +76,10 @@ def make(clip, out):
     return cid
 
 def main():
-    project, dirs = sys.argv[1], sys.argv[2:]
+    project, dirs, tz = sys.argv[1], sys.argv[2:], None
+    if dirs[:1] == ['--tz']:
+        h, mi = int(dirs[1][:3]), int(dirs[1][0] + dirs[1][4:6])
+        tz, dirs = datetime.timezone(datetime.timedelta(hours=h, minutes=mi)), dirs[2:]
     out = os.path.join(project, 'ingest')
     for d in ('proxy', 'sheets', 'audio'): os.makedirs(f'{out}/{d}', exist_ok=True)
     clips = []
@@ -75,7 +89,7 @@ def main():
             if '_剪辑_' in f or f.startswith('render_'): continue   # our own renders, not footage
             p = os.path.join(d, f); info = probe(p)
             if info['duration'] <= 0: continue
-            t = shot_time(f, info['creation']) or (mtime_time(p) if f.startswith('IMG_') else '')
+            t = shot_time(f, info['creation'], tz) or (mtime_time(p) if f.startswith('IMG_') else '')
             clips.append({'path': p, 'name': f, **info, 'time': t, 'kind': kind(f, info)})
     clips.sort(key=lambda c: (c['time'] or '9999', c['name']))
     for i, c in enumerate(clips): c['id'] = f'c{i + 1:03d}'

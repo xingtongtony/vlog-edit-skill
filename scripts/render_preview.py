@@ -126,6 +126,15 @@ def card_png(card, W, H, path):
             if card.get('sub'):
                 cap = ft('Outfit[wght].ttf', 20, 400); spaced(d, x + 2 * s, y + 200 * s, card['sub'], cap, fill, 7 * s)
         im = shadowed(fn, 9 * s)
+    elif kind == 'pop':    # 花字: one short reaction line after a punchline, slightly tilted, placed next to the subject
+        f = ft('SmileySans-Oblique.ttf', card.get('size', 64)); x, y = W * card.get('x', 0.62), H * card.get('y', 0.18)
+        lay = Image.new('RGBA', (W, H)); d = ImageDraw.Draw(lay); tw = d.textlength(text, font=f)
+        pad = 18 * s; box = (x - pad, y - pad * 0.6, x + tw + pad, y + card.get('size', 64) * s * 1.05 + pad * 0.6)
+        d.rounded_rectangle(box, radius=10 * s, fill=tuple(card.get('bg', (255, 214, 64))) + (235,))
+        d.text((x, y), text, font=f, fill=tuple(card.get('fg', (24, 24, 24))) + (255,))
+        lay = lay.rotate(card.get('tilt', -3), resample=Image.BICUBIC, center=((box[0] + box[2]) / 2, (box[1] + box[3]) / 2))
+        sh = Image.new('RGBA', (W, H)); sh.paste((0, 0, 0, 90), (0, 0), lay.split()[3].filter(ImageFilter.GaussianBlur(8 * s)))
+        im = Image.alpha_composite(sh, lay)
     elif kind == 'label':  # small place/time stamp, bottom-left
         f = ImageFont.truetype(FONT, round(28 * s))
         def fn(d, fill): spaced(d, 64 * s, H - 118 * s, text, f, fill, 3 * s)
@@ -140,6 +149,63 @@ def card_png(card, W, H, path):
     im.save(path)
 
 MONO = '/System/Library/Fonts/Menlo.ttc'
+
+def grunge_mask(alpha, seed=0):
+    """Worn-print texture on a text alpha: small rounded speckles inside the strokes and nibbles along the edges
+    (the user's own Jianying title for Bohol, 2026-10-23)."""
+    a = np.asarray(alpha, np.float32) / 255; h, w = a.shape; rng = np.random.default_rng(seed)
+    n1 = np.asarray(Image.fromarray((rng.random((h, w)) * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(1.6)), np.float32)
+    n2 = np.asarray(Image.fromarray((rng.random((max(1, h // 6), max(1, w // 6))) * 255).astype(np.uint8)).resize((w, h), Image.BICUBIC)
+                    .filter(ImageFilter.GaussianBlur(3)), np.float32)
+    n = 0.55 * (n1 - n1.mean()) / (n1.std() + 1e-6) + 0.45 * (n2 - n2.mean()) / (n2.std() + 1e-6)
+    inner = np.asarray(alpha.filter(ImageFilter.MinFilter(7)), np.float32) / 255
+    out = a * ~(n > 1.55) * ~((a > 0.4) & (inner < 0.5) & (n > 0.75))
+    return Image.fromarray((np.clip(out, 0, 1) * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(0.6))
+
+def stamp_title_pngs(card, W, H, tmp, k):
+    """Title in the user's own style: small, centred, worn bold - Latin name (Lilita One) over the Chinese name (Noto
+    Serif SC Black). One transparent PNG per glyph, so the glyphs can appear one by one and leave one by one.
+    Returns [(png, order)] in reading order."""
+    s = H / 1080; FD = os.path.join(ROOT, 'fonts')
+    f1 = ImageFont.truetype(os.path.join(FD, 'LilitaOne-Regular.ttf'), round(card.get('size', 100) * s))
+    f2 = ImageFont.truetype(os.path.join(FD, 'NotoSerifSC-Black.otf'), round(card.get('size', 100) * 0.78 * s))
+    latin, cn = card.get('latin', ''), card['text']; y1 = H * card.get('y', 0.32); y2 = y1 + card.get('size', 100) * 1.1 * s
+    al = Image.new('L', (W, H)); d = ImageDraw.Draw(al); boxes = []
+    for txt, f, y, track in ((latin, f1, y1, 2 * s), (cn, f2, y2, 10 * s)):
+        tw = spaced_w(txt, f, track); x = (W - tw) / 2
+        for ch in txt:
+            if ch.strip():
+                d.text((x, y), ch, font=f, fill=255); bb = d.textbbox((x, y), ch, font=f); boxes.append(bb)
+            x += d.textlength(ch, font=f) + track
+    al = grunge_mask(al, seed=card.get('seed', 4))
+    # soft shadow, ~15 % opacity, so the white reads on bright sky without looking outlined
+    sh = al.filter(ImageFilter.GaussianBlur(8 * s)).point(lambda v: int(v * 0.35))
+    out = []
+    for j, bb in enumerate(boxes):
+        m = Image.new('L', (W, H)); m.paste(255, (int(bb[0] - 6 * s), int(bb[1] - 6 * s), int(bb[2] + 6 * s), int(bb[3] + 6 * s)))
+        im = Image.new('RGBA', (W, H)); blk = Image.new('RGBA', (W, H), (0, 0, 0, 255)); wht = Image.new('RGBA', (W, H), (252, 251, 247, 255))
+        im.paste(blk, (0, 0), Image.fromarray(np.minimum(np.asarray(sh), np.asarray(m))))
+        im.paste(wht, (0, 0), Image.fromarray(np.minimum(np.asarray(al), np.asarray(m))))
+        p = f'{tmp}/title{k}_{j}.png'; im.save(p); out.append(p)
+    return out
+
+def place_pngs(card, W, H, tmp, k):
+    """Place | time stamp in the user's own Surabaya style ("Bromo | 14:33"): thin white type, lower left, a light
+    shadow; the place first, the bar and time a beat later. Returns (place png, time png)."""
+    s = H / 1080; f = ImageFont.truetype(FONT, round(40 * s)); x, y = W * card.get('x', 0.094), H * card.get('y', 0.80)
+    place, tm = card['text'], card.get('time', '')
+    d0 = ImageDraw.Draw(Image.new('L', (1, 1))); gap = 22 * s
+    pw = spaced_w(place, f, 2 * s)
+    outs = []
+    for part, px in ((place, x), ((f'|   {tm}' if tm else ''), x + pw + gap)):
+        im = Image.new('RGBA', (W, H))
+        if part:
+            for fill, off in (((0, 0, 0, 90), 2 * s), ((255, 255, 255, 245), 0)):
+                lay = Image.new('RGBA', (W, H)); spaced(ImageDraw.Draw(lay), px + off, y + off, part, f, fill, 2 * s)
+                if off: lay = lay.filter(ImageFilter.GaussianBlur(3 * s))
+                im = Image.alpha_composite(im, lay)
+        p = f'{tmp}/place{k}_{len(outs)}.png'; im.save(p); outs.append(p)
+    return outs
 
 def typewriter_png(text, sub, W, H, path, y=0.40):
     """Time stamp typed out ("05:31 AM_"), with an optional small line underneath once typing ends."""
@@ -193,6 +259,65 @@ def compose_photo(path, W, H, out, caption=None):
         spaced(ImageDraw.Draw(bg), x, y, caption, f, (240, 237, 230), H2 * 0.006)
     bg.save(out, quality=95)
 
+def ease(x):
+    x = min(1.0, max(0.0, x)); return 1 - (1 - x) ** 3
+
+def _bg_frame(clips, clip, t, W, H):
+    """One frame of a video clip as a PIL image (backdrop for a news card)."""
+    raw = subprocess.run([FF, '-v', 'error', '-ss', f'{t:.2f}', '-i', clips[clip]['path'], '-frames:v', '1', '-vf',
+                          f'scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],
+                         capture_output=True).stdout
+    return Image.frombytes('RGB', (W, H), raw)
+
+def render_still(sh, W, H, fps, a0, dur, out, tmp, clips=None):
+    """A photo or a news card as a short video, drawn frame by frame in PIL (smooth push-in, no pixel jitter).
+    Plain photo: the whole photo on black, push-in 4.5 % over the shot. News (`sh['news']`): the screenshot as a card
+    with rounded corners and a soft shadow over a blurred, darkened frame of our own footage (`bg: [clip, t]`); the card
+    rises in, the whole frame drifts in 3.5 %, and a marker highlight sweeps across `hl` (fractions of the screenshot) -
+    a cut-out from the paper, not a screenshot dropped on black."""
+    full = max(0.5, sh['out'] - sh['in']); n = round(dur * fps); f0 = round(a0 * fps); K = max(1, round(full * fps))
+    W2, H2 = W * 2, H * 2
+    news = sh.get('news')
+    if news:
+        from PIL import ImageOps
+        bg = _bg_frame(clips, news['bg'][0], news['bg'][1], W2, H2).filter(ImageFilter.GaussianBlur(H2 / 40))
+        bg = Image.blend(bg, Image.new('RGB', (W2, H2), (8, 10, 14)), 0.45)
+        card = ImageOps.exif_transpose(Image.open(sh['photo'])).convert('RGB')
+        sc = min(W2 * news.get('w', 0.62) / card.width, H2 * news.get('h', 0.74) / card.height)
+        card = card.resize((round(card.width * sc), round(card.height * sc)), Image.LANCZOS)
+        r = round(H2 * 0.012); mask = Image.new('L', card.size, 0); ImageDraw.Draw(mask).rounded_rectangle((0, 0, card.width - 1, card.height - 1), r, fill=255)
+        shadow = Image.new('L', (card.width + 160, card.height + 160), 0); shadow.paste(mask.point(lambda v: v * 0.55), (80, 100))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(36))
+        cx, cy = (W2 - card.width) // 2, (H2 - card.height) // 2 + round(H2 * news.get('dy', 0.0))
+        hl = news.get('hl')
+    else:
+        base = f"{tmp}/photo_plain_{os.path.basename(sh['photo'])}.jpg"
+        if not os.path.exists(base): compose_photo(sh['photo'], W, H, base, sh.get('caption'))
+        base = Image.open(base).convert('RGB')
+    p = subprocess.Popen([FF, '-v', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{W}x{H}', '-r', str(fps), '-i', '-',
+                          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '12', '-pix_fmt', 'yuv420p', out], stdin=subprocess.PIPE)
+    for j in range(n):
+        k = f0 + j; u = k / K
+        if news:
+            t = k / fps; fr = bg.copy()
+            a = ease(t / 0.5); lift = round((1 - a) * H2 * 0.035)
+            fr.paste(Image.new('RGB', shadow.size, (0, 0, 0)), (cx - 80, cy - 80 + lift), shadow.point(lambda v: int(v * a)))
+            c = card.copy()
+            if hl and t > 0.8:
+                w = ease((t - 0.8) / 0.7); x0, y0, x1, y1 = hl
+                box = (round(x0 * c.width), round(y0 * c.height), round((x0 + (x1 - x0) * w) * c.width), round(y1 * c.height))
+                if box[2] > box[0]:
+                    m = Image.new('RGBA', c.size, (0, 0, 0, 0)); ImageDraw.Draw(m).rectangle(box, fill=(255, 205, 40, 105))
+                    c = Image.alpha_composite(c.convert('RGBA'), m).convert('RGB')
+            fr.paste(c, (cx, cy + lift), mask.point(lambda v: int(v * a)))
+            z = 1 + 0.035 * u
+        else:
+            fr = base; z = 1 + 0.045 * u
+        w, h = W2 / z, H2 / z; x0, y0 = (W2 - w) / 2, (H2 - h) / 2
+        frame = fr.resize((W, H), Image.BICUBIC, box=(x0, y0, x0 + w, y0 + h))      # both are drawn at 2x
+        p.stdin.write(frame.tobytes())
+    p.stdin.close(); p.wait()
+
 def shutter(sr):
     """Synthetic camera shutter: two short filtered clicks (no licence needed)."""
     from scipy.signal import butter, sosfilt
@@ -242,7 +367,14 @@ def overlays_for(edl, tl, shots, fps, W, H, tmp):
         p = f'{tmp}/sub{k}.png'; subtitle_png(text, W, H, p); add(p, a, b, 0.08)
     for k, cd in enumerate(edl.get('cards', [])):
         a = tl[cd['shot']] + cd.get('at', 0); b = a + cd['dur']
-        p = f'{tmp}/card{k}.png'; card_png(cd, W, H, p); add(p, a, b, 0.35 if cd.get('kind') != 'label' else 0.25)
+        if cd.get('kind') == 'title' and cd.get('style') == 'stamp':      # glyph by glyph in, glyph by glyph out
+            ps = stamp_title_pngs(cd, W, H, tmp, k); order = np.random.default_rng(k).permutation(len(ps))
+            for j, p in enumerate(ps): ovs.append((p, a + j * 0.09, b - order[j] * 0.07, 0.35, 0.3))
+            continue
+        if cd.get('kind') == 'place':
+            p1, p2 = place_pngs(cd, W, H, tmp, k); ovs.append((p1, a, b, 0.4, 0.4)); ovs.append((p2, a + 0.35, b, 0.4, 0.4))
+            continue
+        p = f'{tmp}/card{k}.png'; card_png(cd, W, H, p); add(p, a, b, {'label': 0.25, 'pop': 0.12}.get(cd.get('kind'), 0.35))
     for k, cd in enumerate(edl.get('typewriter', [])):
         a = tl[cd['shot']] + cd.get('at', 0); step = cd.get('step', 0.07); txt = cd['text']
         for j in range(1, len(txt) + 1):
@@ -257,7 +389,10 @@ def visual_fingerprint(edl):
     import hashlib
     keys = ('shots', 'subtitles', 'vo', 'cards', 'typewriter', 'fx', 'look', 'size', 'fps')
     blob = json.dumps({k: edl.get(k) for k in keys}, sort_keys=True, ensure_ascii=False)
-    return hashlib.sha1((blob + open(os.path.abspath(__file__)).read().split('def main():')[0]).encode()).hexdigest()[:16]
+    src = open(os.path.abspath(__file__)).read()
+    # the picture code: everything before main() plus main() up to the audio mix (the shot renderer lives there)
+    code = src.split('def main():')[0] + src.split('def main():')[1].split('# audio: dialogue/ambience')[0]
+    return hashlib.sha1((blob + code + open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'grade.py')).read()).encode()).hexdigest()[:16]
 
 def frame_count(path):
     r = subprocess.run([FP, '-v', 'error', '-count_packets', '-select_streams', 'v', '-show_entries', 'stream=nb_read_packets',
@@ -298,6 +433,13 @@ def main():
         old = open(reuse + '.visual.sha').read().strip() if os.path.exists(reuse + '.visual.sha') else None
         if old != fp: sys.exit(f'--reuse-video: {reuse} was rendered from a different picture (fingerprint {old} != {fp}); render it fully')
     keep = os.environ.get('KEEP_TMP')
+    # rendered shot segments live next to the output, keyed by the picture fingerprint: a run that stops half-way
+    # (a decode error under load, a crash, a kill) resumes from the shots already done instead of starting over
+    # rendered shots are cached next to the output under a hash of everything that draws them (the shot, the one before
+    # it for a dissolve, its grade, the overlay images and times on it, the leaks over it, the picture code): a change to
+    # three shots re-renders three shots, not the whole film; a run that stops half-way resumes. Absolute path: the
+    # concat list is resolved from tmp.
+    parts = os.path.abspath(f'{out}.parts'); os.makedirs(parts, exist_ok=True)
     with (tempfile.TemporaryDirectory() if not keep else _Keep(keep)) as tmp:
         from scipy.io import wavfile
         ovs = overlays_for(edl, tl, shots, fps, W, H, tmp)
@@ -305,7 +447,7 @@ def main():
         for k, fx in enumerate(edl.get('fx', [])):
             if fx['type'] != 'leak': continue
             d = fx.get('dur', 0.9); a = tl[fx['cut']] - d / 2; p = f'{tmp}/leak{k}.mov'
-            make_leak(p, d, fps, seed=k, warmth=fx.get('warmth', 1.0)); leaks.append((p, a, d))
+            make_leak(p, d, fps, seed=k, warmth=fx.get('warmth', 1.0)); leaks.append((p, a, d, k, fx.get('warmth', 1.0)))
 
         # one grade per clip, measured over every range of it the edit uses (two shots of one clip must match)
         clip_grade = {}
@@ -313,28 +455,46 @@ def main():
             uses = [s for s in shots if s['clip'] == cid]
             ts = [t for s in uses for t in np.linspace(s['in'] + 0.1, max(s['in'] + 0.1, s['out'] - 0.1), 3)]
             modes = {s.get('grade', 'auto') for s in uses}
-            clip_grade[cid] = grade.clip_filter(clips[cid]['path'], ts, mode=modes.pop() if len(modes) == 1 else 'auto', look=edl.get('look', 'film'))
+            mode = modes.pop() if len(modes) == 1 else 'auto'
+            if mode == 'auto' and clips[cid].get('kind') == 'drone': mode = 'none'   # sea seen from the air reads as "underwater"
+            clip_grade[cid] = grade.clip_filter(clips[cid]['path'], ts, mode=mode, look=edl.get('look', 'film'))
         music_on = [False] * len(shots)
         for m in (edl.get('music') or []):
             for k in range(m.get('from_shot', 0), m['to_shot'] if m.get('to_shot') is not None else len(shots)): music_on[k] = True
 
+        import hashlib
+        png_md5 = {}
+        def shot_key(i):
+            s = shots[i]; t0, t1 = tl[i], ends[i]; h = hashlib.sha1(fp.encode())
+            h.update(json.dumps([s, shots[i - 1] if i and s.get('xfade') else None, clip_grade.get(s['clip']),
+                                 clip_grade.get(shots[i - 1]['clip']) if i and s.get('xfade') else None,
+                                 round((s['out'] - s['in']) * fps), i == 0, i == len(shots) - 1], sort_keys=True, default=str).encode())
+            for p, a, b, fi, fo in ovs:
+                if b <= t0 or a >= t1: continue
+                if p not in png_md5: png_md5[p] = hashlib.md5(open(p, 'rb').read()).hexdigest()
+                h.update(f'{png_md5[p]} {a - t0:.3f} {b - t0:.3f} {fi} {fo}'.encode())
+            for p, a, d, k, warm in leaks:
+                if a + d <= t0 or a >= t1: continue
+                h.update(f'leak {k} {warm} {d:.3f} {a - t0:.3f}'.encode())
+            return h.hexdigest()[:20]
         def render_shot(i):
             s = shots[i]; n = round((s['out'] - s['in']) * fps); t0, t1 = tl[i], ends[i]
-            dst = f'{tmp}/s{i:04d}.mp4'
+            dst = f'{parts}/s_{shot_key(i)}.mp4'
             tail = ((f",fade=in:st=0:d={s['fade_from_black']}" if s.get('fade_from_black') else '')
                     + (',fade=in:st=0:d=0.3' if i == 0 else '') + (f',fade=out:st={max(0, n / fps - 0.8):.3f}:d=0.8' if i == len(shots) - 1 else ''))
             def source(sh, a0, dur):
                 """(input args, filter chain) giving `dur` seconds of shot `sh` from source time a0, graded, at W x H."""
                 if sh.get('photo'):
-                    png = f"{tmp}/photo_plain_{os.path.basename(sh['photo'])}.jpg"
-                    if not os.path.exists(png): compose_photo(sh['photo'], W, H, png, sh.get('caption'))
-                    full = max(0.5, sh['out'] - sh['in']); k = round(full * fps)
-                    z = f"zoompan=z='1+0.045*(on+{round(a0 * fps)})/{k}':d=1:s={W}x{H}:fps={fps}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
-                    return ['-loop', '1', '-framerate', str(fps), '-t', f'{dur + 0.2:.3f}', '-i', png], f'{z},setsar=1'
+                    # frames drawn in PIL with sub-pixel crop boxes: ffmpeg zoompan rounds the crop to whole pixels
+                    # every frame and the photo visibly shivers (Bali v1: "所有的照片还有新闻的截图，画面都是颤抖的")
+                    mv = f"{tmp}/still_{sh['clip']}_{round(a0 * fps)}_{round(dur * fps)}.mp4"
+                    if not os.path.exists(mv): render_still(sh, W, H, fps, a0, dur + 0.2, mv, tmp, clips)
+                    return ['-i', mv], 'setsar=1'
                 cc = clips[sh['clip']]
                 gf = clip_grade[sh['clip']]
                 return (['-ss', f'{a0:.3f}', '-t', f'{dur + 0.2:.3f}', '-i', cc['path']],
-                        f'scale={W}:{H}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1' + (',' + gf if gf else ''))
+                        f'scale={W}:{H}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p' + (',' + gf if gf else ''))
+                # format=yuv420p: the underwater chain turns 10-bit HEVC (DJI drone) to black - grade in 8 bit
             src, chain = source(s, s['in'], s['out'] - s['in'])
             flash = ',fade=in:st=0:d=0.18:color=white' if s.get('photo') else ''
             inputs, fc, last, idx = list(src), [f'[0:v]{chain},fps={fps},trim=end_frame={n},setpts=PTS-STARTPTS{flash}{tail}[b]'], 'b', 1
@@ -354,7 +514,7 @@ def main():
                 inputs += ['-loop', '1', '-framerate', str(fps), '-t', f'{t1 - t0 + 0.1:.3f}', '-i', p]
                 fc.append(f'[{idx}:v]{chain}[o{idx}]')
                 fc.append(f"[{last}][o{idx}]overlay=0:0:enable='between(t,{max(0, la):.3f},{lb:.3f})'[v{idx}]"); last = f'v{idx}'; idx += 1
-            for p, a, d in leaks:                              # leaks that touch this shot
+            for p, a, d, _, _ in leaks:                        # leaks that touch this shot
                 if a + d <= t0 or a >= t1: continue
                 # leak already running at this shot's start: seek into it; starting later: shift its timestamps in the graph
                 # (-itsoffset on the input was ignored here and the first half of every leak went missing)
@@ -365,11 +525,12 @@ def main():
             enc = inputs + ['-filter_complex', ';'.join(fc), '-map', f'[{last}]', '-an',
                    '-frames:v', str(n), '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-maxrate', '16M', '-bufsize', '32M', '-bf', '0', '-g', str(fps),
                    '-pix_fmt', 'yuv420p', '-r', str(fps), '-video_track_timescale', str(fps * 1000), dst]
-            if not reuse:
-                run([FF, '-y', '-hwaccel', 'videotoolbox'] + enc)
-                # under full parallel load the hardware decoder once dropped 19 frames from one shot and every later cut
-                # slid out of sync with the sound - count every segment, retry in software, stop if still wrong
-                if frame_count(dst) != n:
+            if not reuse and not (os.path.exists(dst) and frame_count(dst) == n):
+                # under full parallel load the hardware decoder once dropped 19 frames from one shot, and once failed a
+                # shot outright (exit 183, Bali v1) that renders fine on its own - retry in software, stop if still wrong
+                try: run([FF, '-y', '-hwaccel', 'videotoolbox'] + enc); ok = frame_count(dst) == n
+                except subprocess.CalledProcessError: ok = False
+                if not ok:
                     run([FF, '-y'] + enc)
                     if frame_count(dst) != n: raise RuntimeError(f'shot {i} {s["clip"]}: {frame_count(dst)} frames rendered, {n} planned')
             ns = round(n / fps * SR); g = AUDIO_GAIN[s.get('audio', 'ambient')]
@@ -394,14 +555,18 @@ def main():
                 run([FF, '-y'] + src + ['-vn', '-ac', '2', '-ar', str(SR), '-c:a', 'pcm_s16le', aw])
                 _, x = wavfile.read(aw); x = x.astype(np.float32) / 32768 * g
                 k = min(ns, len(x)); x = x[:k].copy()
-                fi = min(int((xd or 0.03) * SR), k // 2); fo = min(int(0.03 * SR), k // 2)   # fade in (longer under a dissolve), 30 ms out
+                # fade in (longer under a dissolve, but short on live speech so the first word is not swallowed), 30 ms out
+                fi = min(int(((min(xd, 0.12) if s.get('audio') == 'live' else xd) or 0.03) * SR), k // 2); fo = min(int(0.03 * SR), k // 2)
                 if fi: x[:fi] *= np.linspace(0, 1, fi)[:, None]
                 if fo: x[k - fo:] *= np.linspace(1, 0, fo)[:, None]
                 seg[:k] += x
             return dst, seg
 
-        with ThreadPoolExecutor(workers) as ex:
-            done = list(ex.map(render_shot, range(len(shots))))
+        ex = ThreadPoolExecutor(workers); futs = [ex.submit(render_shot, i) for i in range(len(shots))]
+        try: done = [f.result() for f in futs]
+        except BaseException:          # stop at the first failed shot instead of rendering every other shot first
+            ex.shutdown(wait=False, cancel_futures=True); raise
+        ex.shutdown()
         vsegs = [d for d, _ in done]; audio = [a for _, a in done]
         if reuse:      # picture unchanged (same fingerprint): take the video stream of the earlier render as it is
             run([FF, '-y', '-i', reuse, '-map', '0:v', '-c', 'copy', f'{tmp}/video.mp4'])
@@ -411,6 +576,28 @@ def main():
 
         # audio: dialogue/ambience + songs, ducked under speech and narration, loudness-normalised on its own
         mix = np.concatenate(audio); N = len(mix); sr_t = N / total; t_ax = np.arange(N) / sr_t
+        # J-cut (`jcut`: the shot's own sound starts that many seconds before its picture, under the previous shot) and
+        # L-cut (`lcut`: its sound runs on under the next shot). The picture cuts hard, the sound carries the viewer
+        # across - "the cut is abrupt" in Bali v1 came from picture and sound changing on the same frame.
+        def own_gain(i):
+            sh = shots[i]; g = AUDIO_GAIN[sh.get('audio', 'ambient')]
+            return AMBIENT_NO_MUSIC if sh.get('audio', 'ambient') == 'ambient' and not music_on[i] else g
+        for i, sh in enumerate(shots):
+            c = clips.get(sh['clip'], {})
+            if sh.get('photo') or not c.get('audio'): continue
+            for kind in ('jcut', 'lcut'):
+                d = sh.get(kind, 0)
+                if not d or (kind == 'jcut' and i == 0) or (kind == 'lcut' and i == len(shots) - 1): continue
+                src0 = sh['in'] - d if kind == 'jcut' else sh['out']
+                if src0 < 0: d += src0; src0 = 0.0
+                if d <= 0.05: continue
+                w = f'{tmp}/{kind}{i:04d}.wav'
+                run([FF, '-y', '-ss', f'{src0:.3f}', '-t', f'{d:.3f}', '-i', c['path'], '-vn', '-ac', '2', '-ar', str(SR), '-c:a', 'pcm_s16le', w])
+                _, x = wavfile.read(w); x = x.astype(np.float32) / 32768 * own_gain(i)
+                at = int((tl[i] - d) * sr_t) if kind == 'jcut' else int(ends[i] * sr_t); m = min(len(x), N - at)
+                if m <= 0: continue
+                ramp = np.linspace(0, 1, m) if kind == 'jcut' else np.linspace(1, 0, m)
+                mix[at:at + m] = mix[at:at + m] * (1 - 0.6 * ramp)[:, None] + x[:m] * ramp[:, None]
         tracks = edl.get('music') or []
         if isinstance(tracks, dict): tracks = [dict(tracks, from_shot=tracks.get('at_shot', 0))]
         music = np.zeros_like(mix)
@@ -457,7 +644,17 @@ def main():
     open(out + '.visual.sha', 'w').write(fp)
     print(f'{out}: {total:.2f}s, {len(shots)} shots, {len(ovs)} overlays')
     ok = verify(out, edl, clips, tl, total)
+    if ok:                             # segments are only kept to resume an interrupted or failed run
+        keep = {os.path.basename(p) for p in vsegs}       # drop cached shots this cut no longer uses
+        for f in os.listdir(parts):
+            if f not in keep: os.remove(os.path.join(parts, f))
     sys.exit(0 if ok else 1)
+
+def frame_luma(path, t):
+    """Mean luma (0-255) of one frame at t seconds (t=None: a still image), on a 64x36 thumbnail."""
+    cmd = [FF, '-v', 'error'] + (['-ss', f'{t:.3f}'] if t is not None else []) + ['-i', path, '-frames:v', '1', '-vf', 'scale=64:36,format=gray', '-f', 'rawvideo', '-']
+    raw = subprocess.run(cmd, capture_output=True).stdout
+    return float(np.frombuffer(raw, np.uint8).mean()) if raw else None
 
 def verify(out, edl, clips, tl, total):
     """Self-check before anyone watches it: cuts where planned, audio as long as video, live sound in sync."""
@@ -523,6 +720,16 @@ def verify(out, edl, clips, tl, total):
     I = float(re.findall(r'I:\s+(-?[0-9.]+) LUFS', r)[-1]); pk = float(re.findall(r'Peak:\s+(-?[0-9.]+) dBFS', r)[-1])
     good = pk <= -0.5 and -16.5 <= I <= -12.5; ok &= good
     print(f"  {'✓' if good else '✗'} loudness {I:.1f} LUFS, true peak {pk:+.1f} dBFS")
+    # f. no shot goes black where its source is not dark: a grade that breaks on one pixel format (10-bit drone footage
+    # through the underwater chain, Bali v1) rendered seven shots pure black and every other check passed
+    black = []
+    for i, s in enumerate(shots):
+        mid = tl[i] + (s['out'] - s['in']) / 2
+        r = frame_luma(out, mid)
+        src = frame_luma(s['photo'], None) if s.get('photo') else frame_luma(clips[s['clip']]['path'], s['in'] + (s['out'] - s['in']) / 2)
+        if r is not None and src is not None and r < 12 and src > 35: black.append(f"{i} {s['clip']} ({r:.0f} vs source {src:.0f})")
+    ok &= not black
+    print(f"  {'✓' if not black else '✗'} no shot black where its source is not: {', '.join(black) if black else 'all shots'}")
     print('  verify:', 'PASS' if ok else 'FAIL')
     return ok
 

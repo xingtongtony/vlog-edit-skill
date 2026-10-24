@@ -84,3 +84,13 @@ Monplaisir（尤克里里）和 John Bartmann（水下氛围）的这几张专�
 ## Pixabay 需要用户下载
 
 Pixabay 有 Cloudflare 真人验证，脚本下载不了。需要时给用户列出搜索词和歌名，用户下载后放进 `music/`。
+
+## 每一期用过的歌（下一期不要再用，2026-10-24 片主："音乐不要每次剪都是这几首"）
+
+| 项目 | 用过的歌 |
+|---|---|
+| 菲律宾薄荷岛（2026-10） | Monplaisir: On the road / Red Hair Blue Sky / Sincere Love / Stay Quiet / Hop / Time Gap / First / Je voudrais être un pigeon；Music for Creators: Summer Tropical House / Peaceful Background Acoustic / Happy Feel Good Acoustic Pop / Upbeat Inspiring Folk Acoustic Guitar |
+| 巴厘岛 v1（作废） | 同上一批，被片主否了 |
+| 巴厘岛 v2 | Mixkit: Magical Moment / Traveling Along / A Happy Child / Forever in My Heart / Down the Hill / Slow Pop / Chillax / Relaxing Country / Swings and Slides / A Special Feeling；HoliznaCC0: Summer Felt Longer Then（FMA，CC0） |
+
+下一期先从 `projects/*/edl/*.json` 里列出用过的歌，排除掉再选。

@@ -16,6 +16,7 @@
 | `Xiaolai-Regular.ttf` | 小赖字体 | 可爱手写 | ✓ | ✓ | 俏皮的小标题、贴纸感文字 |
 | `SmileySans-Oblique.ttf` | 得意黑 | 窄而有力的斜黑体 | ✓ | | 现代感标题、标签；封面底部白色系列名（“搓泥…环游记”） |
 | `ZCOOLQingKeHuangYou-Regular.ttf` | 站酷庆科黄油体 | 粗壮、圆润的标题字（缺“·”） | ✓ | ✓ | 需要繁体的粗标题 |
+| `NotoSerifSC-Black.otf` | 思源宋体 Black | 最粗的宋体；只配合做旧纹理用在片名上 | ✓ | | 片名中文（片主 2026-10-23 在剪映里自己选的薄荷岛片名就是做旧粗宋 + 做旧圆粗英文，逐字出现。这是片主指定的例外，不要拿它做别的） |
 | `ResourceHanRoundedCN-Light.ttf` | 资源圆体 细 | 圆体 | ✓ | ✓ | 视频字幕（规格见 `docs/storytelling.md`）；封面上下两条的小字说明（字距拉开） |
 
 ## 英文
@@ -32,7 +33,7 @@
 | `Pacifico-Regular.ttf` | 圆润手写 | “Tony Vlog”（伊豆那种） |
 | `Caveat[wght].ttf` | 随手写的笔迹 | “LifeVlog”那种浅色手写 |
 | `PermanentMarker-Regular.ttf` | 马克笔 | 红色“vlog”涂写（青甘那种） |
-| `LilitaOne-Regular.ttf` | 圆头粗体大写 | “TONY VLOG”（喀什、独库那种） |
+| `LilitaOne-Regular.ttf` | 圆头粗体大写 | “TONY VLOG”（喀什、独库那种）；片名英文（加做旧纹理，配思源宋体 Black，见上） |
 | `BebasNeue-Regular.ttf` | 窄粗无衬线大写 | 角标、日期 |
 | `Outfit[wght].ttf` | 细而现代的几何无衬线（粗细可调） | 字距拉开的小号英文：片名卡、章节卡、片尾卡的副标题，照片说明；四角小标签 |
 | `SpaceGrotesk[wght].ttf` | 带一点个性的现代无衬线 | 日期、编号、杂志感的小字 |

@@ -10,6 +10,9 @@
     direction (no back-and-forth); talking shots get looser limits. `motion_ok='why'` overrides after looking at it
   * on save: no title / chapter / end card while a subtitle is on screen; no shot without sound (drone, photo, mute)
     while no music plays - unless it carries a `bed` of natural sound from another clip
+  * soft cuts (`soft=0.35`): outside the teaser, every change of clip dissolves (picture and sound cross-fade) unless the
+    shot sets its own `xfade` or `cut=True`. A hard cut from one place to another read as "cut off, then a new shot jumps
+    in" (Bali feedback, 2026-10-23); a cut inside one continuous take stays hard
 
     b = Builder(project, times={'c066': '2026-09-30T15:35'})
     b.begin_teaser(); ...; b.end_teaser()
@@ -72,8 +75,8 @@ class EditError(Exception): pass
 class Builder:
     LEAD, TAIL, MERGE_GAP = 0.25, 0.7, 1.2
 
-    def __init__(self, project, fps=30, look='film', times=None):
-        self.project, self.fps = project, fps
+    def __init__(self, project, fps=30, look='film', times=None, soft=0.0):
+        self.project, self.fps, self.soft = project, fps, soft
         ing = os.path.join(project, 'ingest')
         self.clips = {c['id']: c for c in json.load(open(os.path.join(ing, 'clips.json')))}
         rd = lambda f, d: json.load(open(os.path.join(ing, f))) if os.path.exists(os.path.join(ing, f)) else d
@@ -134,8 +137,17 @@ class Builder:
                if not any(min(s + b - a, y) - max(s, x) > 0.1 for x, y in self.used.get(self.canon(clip), []))][:5]
         raise EditError(f'{clip} {a:.1f}-{b:.1f}s: {why}. Steady windows in this clip: {alt or "none - use another clip"}')
 
+    def _soften(self, clip, kw):
+        """Default dissolve on a change of clip (see `soft`); `cut=True` keeps a hard cut."""
+        cut = kw.pop('cut', False)
+        prev = self.e['shots'][-1] if self.e['shots'] else None
+        if self.soft and not self.teaser and not cut and 'xfade' not in kw and prev and prev['clip'] != clip:
+            kw['xfade'] = self.soft
+        return kw
+
     def shot(self, clip, a, b, audio='ambient', note='', back=False, motion_ok=None, **kw):
         c = self.clips[clip]; b = min(b, c['duration'] - 0.05); a = max(0.0, a)
+        kw = self._soften(clip, kw)
         prev = self.e['shots'][-1] if self.e['shots'] else None
         if prev and prev['clip'] == clip and 0 < a - prev['out'] < 0.5:
             a = prev['out']            # a 0.1 s skip inside one take reads as a stutter: make it continuous
@@ -152,7 +164,7 @@ class Builder:
             if bed[1] + dur > self.clips[bed[0]]['duration'] - 0.05:
                 raise EditError(f"bed {bed[0]} {bed[1]}+{dur:.1f}s runs past the end of the clip ({self.clips[bed[0]]['duration']:.1f}s) - the rest is silence")
             kw['bed'] = {'clip': bed[0], 'in': bed[1]}
-        p = self.photos[pid]; self._check(pid, 0, dur, back)
+        p = self.photos[pid]; self._check(pid, 0, dur, back); kw = self._soften(pid, kw)
         self.e['shots'].append(dict(clip=pid, photo=p['file'], caption=caption, **{'in': 0.0, 'out': round(dur, 3)}, audio='mute', note=note or 'photo', **kw))
         return self._placed()
 
@@ -184,11 +196,24 @@ class Builder:
 
     # ---------------- speech ----------------
     def words(self, clip):
+        """Word timestamps of a clip. Whisper sometimes squeezes a long sentence into a few seconds (Bali c213: ~40
+        syllables in 3.9 s, and narration went out over the user talking): a segment faster than 7 syllables/s is
+        stretched to the user's speaking pace (VO_RATE) so the overlap checks see the whole sentence."""
         p = os.path.join(self.project, 'ingest', 'transcripts', f'{clip}.json')
         from transcribe import hallucination          # "Thank you." heard in underwater breathing etc.
-        return [w for s in json.load(open(p))['segments'] if not hallucination(s) for w in s.get('words', []) if w['w'].strip()]
+        out = []
+        for seg in json.load(open(p))['segments']:
+            if hallucination(seg): continue
+            ws = [dict(w) for w in seg.get('words', []) if w['w'].strip()]
+            if not ws: continue
+            a, b = ws[0]['s'], ws[-1]['e']; n = syllables(seg['text'])
+            if b > a and n / (b - a) > 7:
+                k = (n / VO_RATE) / (b - a)
+                for w in ws: w['s'], w['e'] = a + (w['s'] - a) * k, a + (w['e'] - a) * k
+            out += ws
+        return out
 
-    def talk(self, clip, pieces, note='', xfade=0, back=False, motion_ok=None):
+    def talk(self, clip, pieces, note='', xfade=0, back=False, motion_ok=None, **first_kw):
         """pieces: [(first_word_start, last_word_end, [corrected subtitle lines])]. Each piece is padded with LEAD / TAIL;
         pieces closer than MERGE_GAP are merged into one shot (the pause stays, no jump cut)."""
         dur = self.clips[clip]['duration']
@@ -200,8 +225,9 @@ class Builder:
         for k, (a, b, parts) in enumerate(merged):
             nxt = merged[k + 1][0] if k + 1 < len(merged) else dur
             sa, sb = max(0.0, a - self.LEAD), min(dur - 0.05, b + self.TAIL, nxt - 0.05)
+            extra = dict(first_kw, **({'xfade': xfade} if xfade else {})) if k == 0 else {}   # jcut / cut / xfade on the first shot
             i = self.shot(clip, sa, sb, audio='live', note=note or parts[0][2][0] if parts[0][2] else note,
-                          back=back, motion_ok=motion_ok, **({'xfade': xfade} if xfade and first is None else {}))
+                          back=back, motion_ok=motion_ok, **extra)
             first = i if first is None else first
             ws_all = self.words(clip)
             for pa, pb, lines in parts:
@@ -216,13 +242,13 @@ class Builder:
         return first
 
     # ---------------- narration over B-roll / photos ----------------
-    def vo(self, paras, broll, gap=0.6, lead=0.6, tail=1.0, xfade=0, beds=None, back=False, motion_ok=None):
+    def vo(self, paras, broll, gap=0.6, lead=0.6, tail=1.0, xfade=0, beds=None, back=False, motion_ok=None, **first_kw):
         """Narration laid over B-roll items: (clip, start[, audio[, seconds]]) or ('photo', pid[, caption]). An item
         with `seconds` keeps that length (a clip with only a short usable window); the others share the rest. A start of
         'next' continues the take where the previous item ended.
         `paras` is one paragraph (str) or a list of them, written with punctuation the way the user will say it in one
         breath; each is cut into short subtitle lines timed at the user's pace (VO_RATE, VO_PAUSE) and `gap` separates
-        paragraphs. The block lasts as long as the speech needs plus air; each item gets an equal share (at least 2.2 s).
+        paragraphs. The block lasts as long as the speech needs plus air, shared by weight (see below).
         A subtitle stays up through the pause after it, so the box does not flicker between lines of one paragraph.
         `back` / `motion_ok` apply to every B-roll item (e.g. to keep an order or a shot the user chose in Jianying)."""
         if isinstance(paras, str): paras = [paras]
@@ -234,21 +260,33 @@ class Builder:
                 last = j == len(split) - 1
                 lines.append((text, vo_duration(text), gap if last else pause, pid, p if j == 0 else None))
         need = lead + sum(d + a for _, d, a, _, _ in lines) - lines[-1][2] + tail
-        fixed = [it[3] if it[0] != 'photo' and len(it) > 3 else None for it in broll]   # (clip, start, audio, seconds)
-        free = sum(1 for f in fixed if f is None)
-        share = max(2.2, (need - sum(f for f in fixed if f)) / free) if free else 0
+        # Items: (clip, start[, audio[, seconds]]), ('photo', pid[, caption]) or a dict {clip|photo, at, audio, sec, w}.
+        # `sec` fixes an item's length; the rest of the block is shared in proportion to `w` (default 1): the shot that
+        # carries the paragraph (dolphins breaking the surface, the T-rex cliff) gets w=2-3, a passing cutaway w=0.6.
+        # Equal shares made every shot the same length (Bali v1: "每个片段时长都特别平均").
+        items = []
+        for it in broll:
+            if isinstance(it, dict): items.append(dict({'audio': 'ambient', 'w': 1.0}, **it)); continue
+            if it[0] == 'photo': items.append({'photo': it[1], 'caption': it[2] if len(it) > 2 else None, 'w': 1.0}); continue
+            items.append({'clip': it[0], 'at': it[1], 'audio': it[2] if len(it) > 2 else 'ambient', 'sec': it[3] if len(it) > 3 else None, 'w': 1.0})
+        fixed = sum(it['sec'] for it in items if it.get('sec')); wsum = sum(it['w'] for it in items if not it.get('sec'))
+        rest = max(0.0, need - fixed)
+        for it in items:
+            if not it.get('sec'): it['len'] = max(1.6 if it['w'] < 1 else 2.2, rest * it['w'] / wsum) if wsum else 2.2
+            else: it['len'] = it['sec']
         first = None
-        for item in broll:
-            extra = {'xfade': xfade} if xfade and first is None else {}
-            if item[0] == 'photo':
-                bed = beds[broll.index(item)] if beds else None
-                i = self.photo(item[1], share, caption=item[2] if len(item) > 2 else None, bed=bed, back=back, **extra)
+        for k, it in enumerate(items):
+            extra = (dict(first_kw, **({'xfade': xfade} if xfade else {}))) if first is None else {}
+            if 'photo' in it:
+                bed = beds[k] if beds else None
+                if it.get('news'): extra = dict(extra, news=it['news'])     # paper-clipping card (render_preview.render_still)
+                i = self.photo(it['photo'], it['len'], caption=it.get('caption'), bed=bed, back=back, **extra)
             else:
-                clip, a = item[0], item[1]; audio = item[2] if len(item) > 2 else 'ambient'
-                d = item[3] if len(item) > 3 else share
+                clip, a, d = it['clip'], it.get('at'), it['len']
                 if a == 'next': a = self.e['shots'][-1]['out']          # continue the take of the previous item
                 elif a is None: a = self.steady(clip, d)
-                i = self.shot(clip, a, a + d, audio=audio, note='VO B-roll', back=back, motion_ok=motion_ok, **extra)
+                i = self.shot(clip, a, a + d, audio=it['audio'], note=it.get('note', 'VO B-roll'), back=back,
+                              motion_ok=it.get('motion_ok', motion_ok), **extra)
             first = i if first is None else first
         t = lead; durs = [self.dur(k) for k in range(first, self.n)]
         for text, speech, pause, pid, para in lines:
@@ -266,6 +304,10 @@ class Builder:
         self.pending_cards.append({'kind': 'chapter', 'kicker': num, 'text': title, 'sub': sub, 'at': at, 'dur': dur})
     def card(self, text, at=0.4, dur=2.4, **kw): self.pending_cards.append({'text': text, 'at': at, 'dur': dur, **kw})
     def leak_before_next(self, dur=1.0): self.e['fx'].append({'type': 'leak', 'cut': self.n, 'dur': dur})
+    def place(self, place, time='', at=0.5, dur=3.4, x=0.094, y=0.80):
+        """Place | time stamp on the next shot, the user's own style ("Bromo | 14:33", lower left, thin type)."""
+        self.pending_cards.append({'kind': 'place', 'text': place, 'time': time, 'at': at, 'dur': dur, 'x': x, 'y': y})
+
     def stamp(self, text, sub='', at=0.6, dur=2.6, y=0.10):
         self.e['typewriter'].append({'shot': self.n, 'at': at, 'dur': dur, 'text': text, 'sub': sub, 'y': y, 'step': 0.08})
 
@@ -286,6 +328,17 @@ class Builder:
         if self.e['music'] and self.e['music'][-1].get('to_shot') is None:
             self.e['music'][-1]['to_shot'] = self.n; self.e['music'][-1]['out_why'] = why
     def music_state(self, state, at=0.0): self.e['music'][-1]['states'].append({'shot': self.n, 'at': at, 'state': state})
+
+    def end_on_last_bar(self, tail=0.6):
+        """Call last, before save: the final song plays out to its own ending on the last frame instead of being faded
+        out mid-phrase (an ending that "just stops" read as stiff, Bali 2026-10-23). Moves its start so that
+        track length - start = the time from its first shot to the end of the film."""
+        import subprocess
+        m = self.e['music'][-1]
+        L = float(subprocess.run(['/opt/homebrew/bin/ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', m['path']],
+                                 capture_output=True, text=True).stdout)
+        run = sum(self.dur(i) for i in range(m['from_shot'], self.n)) - m.get('at_offset', 0)
+        m['start'] = round(max(0.0, L - run - tail), 2)
 
     def _final_checks(self):
         t, start = 0.0, []
@@ -319,6 +372,12 @@ class Builder:
                 x, y = s['in'] + max(a, t0) - t0, s['in'] + min(b, t1) - t0
                 said = ''.join(w['w'] for w in self.words(s['clip']) if w['s'] < y and w['e'] > x).strip()
                 if len(said) > 1: errs.append(f"narration '{v['text']}' talks over speech in {s['clip']} {x:.1f}-{y:.1f}s ('{said[:20]}')")
+        # rhythm: four or more B-roll shots in a row within 0.4 s of each other read as a metronome
+        run = []
+        for i, s_ in enumerate(sh):
+            if s_.get('audio') == 'live': run = []; continue
+            d = self.dur(i); run = [x for x in run if abs(self.dur(x) - d) < 0.4] + [i]
+            if len(run) == 4: self.warnings.append(f"shots {run[0]}-{i}: four B-roll shots of ~{d:.1f}s in a row - give the strong one more time")
         if errs: raise EditError('\n  '.join([''] + errs))
 
     def save(self, path):
