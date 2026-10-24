@@ -168,6 +168,16 @@ class Builder:
         self.e['shots'].append(dict(clip=pid, photo=p['file'], caption=caption, **{'in': 0.0, 'out': round(dur, 3)}, audio='mute', note=note or 'photo', **kw))
         return self._placed()
 
+    def map(self, stops, leg, dur=3.6, box=None, land=None, note='', **kw):
+        """Route map shot (render_preview.render_map): `stops` [[lon, lat, name, how]], the line is drawn from stop
+        leg-1 to stop `leg`; earlier legs show as done. Uses no footage, so the clock and the reuse checks ignore it."""
+        land = land or os.path.join(self.project, 'design', 'bali_land.json')
+        box = box or [min(x for x, *_ in stops) - 0.25, min(y for _, y, *_ in stops) - 0.2, max(x for x, *_ in stops) + 0.25, max(y for _, y, *_ in stops) + 0.2]
+        kw = self._soften(f'map{leg}', kw)
+        self.e['shots'].append(dict(clip=f'map{leg}', photo=land, map={'stops': stops, 'leg': leg, 'box': box, 'land': land},
+                                    **{'in': 0.0, 'out': round(dur, 3)}, audio='mute', note=note or f'路线图 -> {stops[leg][2]}', **kw))
+        return self._placed()
+
     def _placed(self):
         i = self.n - 1
         for card in self.pending_cards: card['shot'] = i; self.e['cards'].append(card)
@@ -213,6 +223,89 @@ class Builder:
             out += ws
         return out
 
+    # ---------------- speech edges from the audio itself ----------------
+    def _env(self, clip):
+        """20 ms RMS levels (dB) of a clip's 16 kHz audio, its noise floor, and how long the camera muted its start."""
+        if not hasattr(self, '_envs'): self._envs = {}
+        if clip not in self._envs:
+            import wave
+            import numpy as np
+            w = wave.open(os.path.join(self.project, 'ingest', 'audio', f'{clip}.wav'))
+            a = np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32) / 32768
+            n = len(a) // 320; d = 20 * np.log10(np.sqrt(np.mean(a[:n * 320].reshape(n, 320) ** 2, axis=1)) + 1e-9)
+            live = d[d > -150]; floor = float(np.percentile(live, 15)) if len(live) else -60.0
+            muted = 0
+            while muted < len(d) and d[muted] < -150: muted += 1
+            self._envs[clip] = (d, floor, muted * 0.02)
+        return self._envs[clip]
+
+    def _speech_edges(self, clip, a, b, lo, hi):
+        """Move a piece's in/out points to the nearest quiet moment around the first / last word (whisper word times
+        are often 0.1-0.3 s late, and a cut on a consonant swallows it: "找到 Inner Peace" played as "到 Inner Peace").
+        Raises when the camera's muted start (action cams drop the first ~0.5 s of sound) swallowed the first syllable."""
+        if not os.path.exists(os.path.join(self.project, 'ingest', 'audio', f'{clip}.wav')): return a, b
+        d, floor, muted = self._env(clip)
+        loud = lambda t0, t1: d[max(0, int(t0 / 0.02)):max(1, int(t1 / 0.02))].max(initial=-200) > floor + 8
+        gap = any(not loud(t, t + 0.06) for t in [muted + 0.02 * k for k in range(max(0, int((a - muted) / 0.02) - 2))])
+        if muted >= 0.3 and a - muted < 1.0 and loud(muted, muted + 0.15) and not gap:    # sound runs on from the unmute into the first word
+            msg = (f'{clip} {a:.2f}s: the camera muted the first {muted:.2f}s and the speaker was already talking - the '
+                   f'first syllable is lost in the source. Start at the next phrase, or carry the line in narration')
+            if os.environ.get('SPEECH_WARN'): self.warnings.append(msg)
+            else: raise EditError(msg)
+        sa = a
+        while sa > max(lo, a - 1.0) and loud(sa - 0.06, sa): sa -= 0.02      # back to a quiet 60 ms before the first word
+        sb = b
+        while sb < min(hi, b + 1.0) and loud(sb, sb + 0.06): sb += 0.02      # and after the last
+        return sa, sb
+
+    def _check_pieces(self, clip, pieces):
+        """Every word a subtitle shows must be heard in the piece, and no piece may start or end inside an utterance.
+        Bali v3: the subtitle read "船长特别无所谓地在这钓" over a cut that began after "船长也……在这" - the user heard the
+        subtitle's first words missing. Errors (SPEECH_WARN=1 lists them as warnings instead)."""
+        p = os.path.join(self.project, 'ingest', 'transcripts', f'{clip}.json')
+        if not os.path.exists(p): return
+        ws = self.words(clip); msgs = []
+        cjk = lambda t: re.findall(r'[一-鿿]', t)
+        spans = [(a, b) for a, b, _ in pieces]
+        inside = lambda w: any(w['s'] >= a - 0.25 and w['e'] <= b + 0.25 for a, b in spans)
+        for a, b, lines in pieces:
+            heard = ''.join(w['w'] for w in ws if w['s'] >= a - 0.25 and w['e'] <= b + 0.25)
+            before = [w for w in ws if a - 6.0 <= w['s'] and w['e'] <= a - 0.05 and not inside(w)]
+            after = [w for w in ws if b + 0.05 <= w['s'] and w['e'] <= b + 6.0 and not inside(w)]
+            txt = ''.join(lines)
+            # characters on screen that the piece does not contain but the speaker said just before / after it
+            lost = [ch for ch in dict.fromkeys(cjk(txt)) if ch not in heard and any(ch in w['w'] for w in before + after)]
+            if lost:
+                where = [f"{w['w'].strip()}@{w['s']:.1f}" for w in before + after if any(ch in w['w'] for ch in lost)]
+                msgs.append(f'{clip} {a:.2f}-{b:.2f}: the subtitle shows "{"".join(lost)}" but the piece does not contain it - '
+                            f'it is said at {", ".join(where[:4])}; widen the piece or correct the subtitle')
+            stop = lambda w: re.search(r'[。！？.!?]\s*$', w['w'])          # a finished sentence on its own is a clean edge
+            first_in = next((w for w in ws if w['s'] >= a - 0.25), None)
+            if before and a - before[-1]['e'] < 0.8 and not (stop(before[-1]) and a - before[-1]['e'] > 0.3):
+                msgs.append(f'{clip} {a:.2f}: starts mid-utterance - "{before[-1]["w"].strip()}" ends {a - before[-1]["e"]:.2f}s before it; '
+                            f'start at {self._utterance_start(ws, a):.2f}')
+            last_in = [w for w in ws if w['e'] <= b + 0.25]
+            if after and after[0]['s'] - b < 0.8 and not (last_in and stop(last_in[-1]) and after[0]['s'] - b > 0.3):
+                msgs.append(f'{clip} {b:.2f}: ends mid-utterance - "{after[0]["w"].strip()}" follows {after[0]["s"] - b:.2f}s after it')
+        for m in msgs:
+            ok = [why for c_, t_, why in getattr(self, 'speech_oks', []) if c_ == clip and f'{t_:.2f}' in m]
+            if ok: self.warnings.append(f'accepted ({ok[0]}): {m}'); continue
+            if os.environ.get('SPEECH_WARN'): self.warnings.append(m)
+            else: raise EditError(m)
+
+    def speech_ok(self, clip, t, why):
+        """Accept one flagged speech edge of a piece at time t after checking it (e.g. the 'words' after it are a
+        transcription of wind and waves, or the cut sits on a deliberate restart of the same phrase)."""
+        if not hasattr(self, 'speech_oks'): self.speech_oks = []
+        self.speech_oks.append((clip, t, why))
+
+    @staticmethod
+    def _utterance_start(ws, a, gap=0.8):
+        """Walk back from time a over words separated by less than `gap` seconds."""
+        prev = [w for w in ws if w['e'] <= a - 0.05]; t = a
+        while prev and t - prev[-1]['e'] < gap: t = prev[-1]['s']; prev = prev[:-1]
+        return t
+
     def talk(self, clip, pieces, note='', xfade=0, back=False, motion_ok=None, **first_kw):
         """pieces: [(first_word_start, last_word_end, [corrected subtitle lines])]. Each piece is padded with LEAD / TAIL;
         pieces closer than MERGE_GAP are merged into one shot (the pause stays, no jump cut)."""
@@ -221,10 +314,13 @@ class Builder:
         for a, b, lines in pieces:
             if merged and a - merged[-1][1] < self.MERGE_GAP: merged[-1] = (merged[-1][0], b, merged[-1][2] + [(a, b, lines)])
             else: merged.append((a, b, [(a, b, lines)]))
+        self._check_pieces(clip, pieces)
         first = None
         for k, (a, b, parts) in enumerate(merged):
             nxt = merged[k + 1][0] if k + 1 < len(merged) else dur
-            sa, sb = max(0.0, a - self.LEAD), min(dur - 0.05, b + self.TAIL, nxt - 0.05)
+            prv = merged[k - 1][1] if k else 0.0
+            qa, qb = self._speech_edges(clip, a, b, prv + 0.1, nxt - 0.1)
+            sa, sb = max(0.0, min(a - self.LEAD, qa - 0.08)), min(dur - 0.05, max(b + self.TAIL, qb + 0.15), nxt - 0.05)
             extra = dict(first_kw, **({'xfade': xfade} if xfade else {})) if k == 0 else {}   # jcut / cut / xfade on the first shot
             i = self.shot(clip, sa, sb, audio='live', note=note or parts[0][2][0] if parts[0][2] else note,
                           back=back, motion_ok=motion_ok, **extra)

@@ -1,6 +1,7 @@
 """Render a preview (or a whole film) from an edit decision list (EDL).
 
 usage: python3 render_preview.py <edl.json> <out.mp4> [--workers N] [--shots A:B] [--reuse-video <earlier render.mp4>]
+                                [--sources <local copies from cache_sources.py>]
 
 EDL (times in seconds; source times are positions inside the clip):
 {
@@ -318,6 +319,97 @@ def render_still(sh, W, H, fps, a0, dur, out, tmp, clips=None):
         p.stdin.write(frame.tobytes())
     p.stdin.close(); p.wait()
 
+def _map_proj(box, W, H, margin=0.06):
+    """lon/lat -> pixel for an equirectangular map of `box` (lon0, lat0, lon1, lat1) fitted into W x H."""
+    import math
+    lon0, lat0, lon1, lat1 = box; k = math.cos(math.radians((lat0 + lat1) / 2))
+    sx = W * (1 - 2 * margin) / ((lon1 - lon0) * k); sy = H * (1 - 2 * margin) / (lat1 - lat0); sc = min(sx, sy)
+    cx, cy = (lon0 + lon1) / 2, (lat0 + lat1) / 2
+    return lambda lon, lat: (W / 2 + (lon - cx) * k * sc, H / 2 - (lat - cy) * sc)
+
+def _land_layer(m, W2, H2):
+    """Land/sea image for the map box: an OSM coastline raster (`m['mask']`, .npy + .json beside it, see
+    projects/*/design) or Natural Earth polygons (`m['land']`)."""
+    import math
+    lon0, lat0, lon1, lat1 = m['box']; k = math.cos(math.radians((lat0 + lat1) / 2)); margin = 0.0
+    sc = min(W2 / ((lon1 - lon0) * k), H2 / (lat1 - lat0)); cx, cy = (lon0 + lon1) / 2, (lat0 + lat1) / 2
+    if m.get('mask'):
+        meta = json.load(open(m['mask'][:-4] + '.json')); Hm, Wm = meta['shape']; bx = meta['box']; res = meta['res']
+        mask = np.unpackbits(np.load(m['mask']))[:Hm * Wm].reshape(Hm, Wm).astype(bool)
+        xs = cx + (np.arange(W2) - W2 / 2) / (k * sc); ys = cy - (np.arange(H2) - H2 / 2) / sc
+        ix = np.clip(((xs - bx[0]) / res).astype(int), 0, Wm - 1); iy = np.clip(((bx[3] - ys) / res).astype(int), 0, Hm - 1)
+        landm = mask[iy[:, None], ix[None, :]]
+        inside = ((xs >= bx[0]) & (xs <= bx[2]))[None, :] & ((ys >= bx[1]) & (ys <= bx[3]))[:, None]
+        landm &= inside
+        return Image.fromarray((landm * 255).astype(np.uint8)), (lambda lon, lat: (W2 / 2 + (lon - cx) * k * sc, H2 / 2 - (lat - cy) * sc))
+    P = lambda lon, lat: (W2 / 2 + (lon - cx) * k * sc, H2 / 2 - (lat - cy) * sc)
+    im = Image.new('L', (W2, H2)); d = ImageDraw.Draw(im)
+    for poly in json.load(open(m['land'])):
+        if len(poly) > 2: d.polygon([P(x, y) for x, y in poly], fill=255)
+    return im, P
+
+def render_map(sh, W, H, fps, a0, dur, out):
+    """Route map shot: land in sand on a deep sea, the trip so far as a white line with small labels, this leg drawn in
+    from the last stop to the next (eased), the new stop's dot, name and how we got there appear when the line
+    arrives; the map drifts in 3 % toward the new stop. Coastline: OpenStreetMap (credited on the frame)."""
+    m = sh['map']; stops = m['stops']; leg = m['leg']                     # stops [[lon, lat, name, how]]
+    W2, H2 = W * 2, H * 2
+    landm, P = _land_layer(m, W2, H2)
+    SEA, LAND, ROUTE, DONE = (22, 36, 44), (231, 223, 203), (242, 165, 65), (250, 248, 240)
+    soft = landm.filter(ImageFilter.GaussianBlur(1.5))
+    base = Image.composite(Image.new('RGB', (W2, H2), LAND), Image.new('RGB', (W2, H2), SEA), soft)
+    shade = landm.filter(ImageFilter.GaussianBlur(H2 / 90)).point(lambda v: int(v * 0.35))           # soft glow off the coast
+    base = Image.composite(Image.new('RGB', (W2, H2), (44, 66, 76)), base, Image.fromarray(np.minimum(np.asarray(shade), 255 - np.asarray(landm))))
+    yy, xx = np.mgrid[0:H2, 0:W2]; vig = 1 - 0.28 * (((xx - W2 / 2) / (W2 / 2)) ** 2 + ((yy - H2 / 2) / (H2 / 2)) ** 2)
+    base = Image.fromarray((np.asarray(base, np.float32) * np.clip(vig, 0.6, 1)[..., None]).astype(np.uint8))
+    fN = ImageFont.truetype(FONT, round(H2 * 0.036)); fn = ImageFont.truetype(FONT, round(H2 * 0.024))
+    fS = ImageFont.truetype(os.path.join(ROOT, 'fonts', 'Outfit[wght].ttf'), round(H2 * 0.017))
+    try: fS.set_variation_by_axes([500])
+    except Exception: pass
+    full = max(0.5, sh['out'] - sh['in']); n = round(dur * fps); f0 = round(a0 * fps); K = max(1, round(full * fps))
+    path = [P(x, y) for x, y, *_ in stops]; dxs = m.get('label_dx') or [0.018] * len(stops)
+    t_draw0, t_draw1 = 0.35, max(0.9, full * 0.62)
+    def lerp(p, q, u): return (p[0] + (q[0] - p[0]) * u, p[1] + (q[1] - p[1]) * u)
+    def label(fr, xy, text, font, fill, a):
+        lay = Image.new('RGBA', (W2, H2)); ld = ImageDraw.Draw(lay)
+        ld.text((xy[0] + 3, xy[1] + 3), text, font=font, fill=(0, 0, 0, int(110 * a)))
+        lay = lay.filter(ImageFilter.GaussianBlur(4)); ImageDraw.Draw(lay).text(xy, text, font=font, fill=fill[:3] + (int(fill[3] * a),))
+        fr.paste(lay, (0, 0), lay)
+    pr = subprocess.Popen([FF, '-v', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{W}x{H}', '-r', str(fps), '-i', '-',
+                           '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '12', '-pix_fmt', 'yuv420p', out], stdin=subprocess.PIPE)
+    lw = round(H2 * 0.005)
+    for j in range(n):
+        k = f0 + j; t = k / fps; u = ease((t - t_draw0) / (t_draw1 - t_draw0))
+        fr = base.copy(); d = ImageDraw.Draw(fr)
+        for q in range(1, leg): d.line([path[q - 1], path[q]], fill=DONE, width=lw)
+        if leg >= 1 and u > 0: d.line([path[leg - 1], lerp(path[leg - 1], path[leg], u)], fill=ROUTE, width=lw + 3)
+        for q in range(leg + 1):
+            if q == leg and u < 1: continue
+            cx, cy = path[q]; r = H2 * (0.012 if q == leg else 0.0075)
+            d.ellipse((cx - r, cy - r, cx + r, cy + r), fill=ROUTE if q == leg else DONE)
+        for q in range(leg + 1):
+            name, how = stops[q][2], (stops[q][3] if len(stops[q]) > 3 else '')
+            cx, cy = path[q]; dx = dxs[q] * W2
+            if q < leg: label(fr, (cx + dx, cy - H2 * 0.03), name, fn, (255, 255, 255, 200), 1.0)
+            elif u >= 1:
+                a = ease((t - t_draw1) / 0.4)
+                label(fr, (cx + dx, cy - H2 * 0.05), name, fN, (255, 255, 255, 255), a)
+                if how: label(fr, (cx + dx + 3, cy + H2 * 0.0), how, fS, (255, 230, 190, 235), a)
+        ImageDraw.Draw(fr).text((W2 - H2 * 0.30, H2 - H2 * 0.04), '© OpenStreetMap contributors' if m.get('mask') else 'Natural Earth',
+                                font=ImageFont.truetype(FONT, round(H2 * 0.013)), fill=(200, 200, 200))
+        z = 1 + 0.03 * k / K; w, h = W2 / z, H2 / z; fx, fy = path[leg]
+        x0 = min(max(0, W2 / 2 + (fx - W2 / 2) * 0.3 - w / 2), W2 - w); y0 = min(max(0, H2 / 2 + (fy - H2 / 2) * 0.3 - h / 2), H2 - h)
+        pr.stdin.write(fr.resize((W, H), Image.BICUBIC, box=(x0, y0, x0 + w, y0 + h)).tobytes())
+    pr.stdin.close(); pr.wait()
+
+def whoosh(sr, dur=0.9):
+    """Soft air whoosh (band-passed noise swelling and falling) for a route-map line (no licence needed)."""
+    from scipy.signal import butter, sosfilt
+    rng = np.random.default_rng(7); n = int(dur * sr); x = rng.standard_normal(n).astype(np.float32)
+    x = sosfilt(butter(2, [300, 2400], 'band', fs=sr, output='sos'), x).astype(np.float32)
+    env = np.sin(np.linspace(0, np.pi, n)) ** 2
+    return np.stack([x * env, x * env], 1) / (np.abs(x).max() + 1e-6) * 0.18
+
 def shutter(sr):
     """Synthetic camera shutter: two short filtered clicks (no licence needed)."""
     from scipy.signal import butter, sosfilt
@@ -389,10 +481,13 @@ def visual_fingerprint(edl):
     import hashlib
     keys = ('shots', 'subtitles', 'vo', 'cards', 'typewriter', 'fx', 'look', 'size', 'fps')
     blob = json.dumps({k: edl.get(k) for k in keys}, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha1((blob + picture_code()).encode()).hexdigest()[:16]
+
+def picture_code():
+    """The code that draws pictures: everything before main(), main() up to the audio mix (the shot renderer), grade.py."""
     src = open(os.path.abspath(__file__)).read()
-    # the picture code: everything before main() plus main() up to the audio mix (the shot renderer lives there)
-    code = src.split('def main():')[0] + src.split('def main():')[1].split('# audio: dialogue/ambience')[0]
-    return hashlib.sha1((blob + code + open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'grade.py')).read()).encode()).hexdigest()[:16]
+    return (src.split('def main():')[0] + src.split('def main():')[1].split('# audio: dialogue/ambience')[0]
+            + open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'grade.py')).read())
 
 def frame_count(path):
     r = subprocess.run([FP, '-v', 'error', '-count_packets', '-select_streams', 'v', '-show_entries', 'stream=nb_read_packets',
@@ -423,6 +518,11 @@ def main():
     workers = int(sys.argv[sys.argv.index('--workers') + 1]) if '--workers' in sys.argv else 4
     W, H = edl.get('size', [1920, 1080]); fps = edl.get('fps', 30)
     clips = {c['id']: c for c in json.load(open(os.path.join(edl['project'], 'ingest', 'clips.json')))}
+    if '--sources' in sys.argv:                     # local copies made by cache_sources.py (the external drive may drop off)
+        src_dir = os.path.expanduser(sys.argv[sys.argv.index('--sources') + 1])
+        for c in clips.values():
+            local = os.path.join(src_dir, os.path.basename(c['path']))
+            if os.path.exists(local): c['path'] = local
     shots = edl['shots']
     starts, t = [], 0
     for s in shots: starts.append(t); t += round((s['out'] - s['in']) * fps)
@@ -463,9 +563,9 @@ def main():
             for k in range(m.get('from_shot', 0), m['to_shot'] if m.get('to_shot') is not None else len(shots)): music_on[k] = True
 
         import hashlib
-        png_md5 = {}
+        png_md5 = {}; code_fp = hashlib.sha1(picture_code().encode()).hexdigest()
         def shot_key(i):
-            s = shots[i]; t0, t1 = tl[i], ends[i]; h = hashlib.sha1(fp.encode())
+            s = shots[i]; t0, t1 = tl[i], ends[i]; h = hashlib.sha1(code_fp.encode())   # not the whole-EDL fingerprint: an edit elsewhere must not re-render this shot
             h.update(json.dumps([s, shots[i - 1] if i and s.get('xfade') else None, clip_grade.get(s['clip']),
                                  clip_grade.get(shots[i - 1]['clip']) if i and s.get('xfade') else None,
                                  round((s['out'] - s['in']) * fps), i == 0, i == len(shots) - 1], sort_keys=True, default=str).encode())
@@ -484,6 +584,10 @@ def main():
                     + (',fade=in:st=0:d=0.3' if i == 0 else '') + (f',fade=out:st={max(0, n / fps - 0.8):.3f}:d=0.8' if i == len(shots) - 1 else ''))
             def source(sh, a0, dur):
                 """(input args, filter chain) giving `dur` seconds of shot `sh` from source time a0, graded, at W x H."""
+                if sh.get('map'):
+                    mv = f"{tmp}/map_{i}_{round(a0 * fps)}_{round(dur * fps)}.mp4"
+                    if not os.path.exists(mv): render_map(sh, W, H, fps, a0, dur + 0.2, mv)
+                    return ['-i', mv], 'setsar=1'
                 if sh.get('photo'):
                     # frames drawn in PIL with sub-pixel crop boxes: ffmpeg zoompan rounds the crop to whole pixels
                     # every frame and the photo visibly shivers (Bali v1: "所有的照片还有新闻的截图，画面都是颤抖的")
@@ -496,7 +600,7 @@ def main():
                         f'scale={W}:{H}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p' + (',' + gf if gf else ''))
                 # format=yuv420p: the underwater chain turns 10-bit HEVC (DJI drone) to black - grade in 8 bit
             src, chain = source(s, s['in'], s['out'] - s['in'])
-            flash = ',fade=in:st=0:d=0.18:color=white' if s.get('photo') else ''
+            flash = ',fade=in:st=0:d=0.18:color=white' if s.get('photo') and not s.get('news') and not s.get('map') else ''
             inputs, fc, last, idx = list(src), [f'[0:v]{chain},fps={fps},trim=end_frame={n},setpts=PTS-STARTPTS{flash}{tail}[b]'], 'b', 1
             xd = s.get('xfade', 0) if i > 0 else 0
             if xd:                                            # dissolve: previous shot keeps running under this one, fading out
@@ -530,6 +634,12 @@ def main():
                 # shot outright (exit 183, Bali v1) that renders fine on its own - retry in software, stop if still wrong
                 try: run([FF, '-y', '-hwaccel', 'videotoolbox'] + enc); ok = frame_count(dst) == n
                 except subprocess.CalledProcessError: ok = False
+                src_path = clips.get(s['clip'], {}).get('path')
+                if not ok and src_path and not os.path.exists(src_path):     # the external drive dropped off: wait for it
+                    import time
+                    for _ in range(60):
+                        if os.path.exists(src_path): break
+                        time.sleep(5)
                 if not ok:
                     run([FF, '-y'] + enc)
                     if frame_count(dst) != n: raise RuntimeError(f'shot {i} {s["clip"]}: {frame_count(dst)} frames rendered, {n} planned')
@@ -537,7 +647,10 @@ def main():
             if s.get('audio', 'ambient') == 'ambient' and not music_on[i]: g = AMBIENT_NO_MUSIC
             seg = np.zeros((ns, 2), np.float32)
             c = clips.get(s['clip'], {'audio': False})
-            if s.get('photo'):
+            if s.get('map'):
+                sfx = whoosh(SR); at = int(0.35 * SR); m_ = min(len(sfx), ns - at)
+                if m_ > 0: seg[at:at + m_] += sfx[:m_]
+            elif s.get('photo') and not s.get('news'):
                 sfx = shutter(SR); seg[:len(sfx)] += sfx[:ns]
             if s.get('bed'):
                 bw = f'{tmp}/bed{i:04d}.wav'
@@ -710,9 +823,10 @@ def verify(out, edl, clips, tl, total):
         low = [(i, db) for i, db in json.load(open(vp)) if db < 15]
         ok &= not low
         print(f"  {'✓' if not low else '✗'} live speech over music: " + (f'all {len(json.load(open(vp)))} shots >= 15 dB' if not low else ', '.join(f'shot {i} {db:.0f} dB' for i, db in low)))
-    # d2. no dead air: no 1.5 s stretch quieter than -48 dBFS (except the first / last second)
+    # d2. no dead air: no 1.5 s stretch quieter than -48 dBFS (except the first second and the last 4 s, where the
+    # closing song is meant to ring out on its own last notes - end_on_last_bar)
     blk = int(0.5 * 16000); lv = [20 * np.log10(np.sqrt(np.mean(a[k:k + blk] ** 2)) / 32768 + 1e-9) for k in range(0, len(a) - blk, blk)]
-    dead = [k * 0.5 for k in range(2, len(lv) - 4) if max(lv[k:k + 3]) < -48]
+    dead = [k * 0.5 for k in range(2, len(lv) - 8) if max(lv[k:k + 3]) < -48]
     ok &= not dead
     print(f"  {'✓' if not dead else '✗'} no silent stretches" + (f': silent around {", ".join(f"{int(t // 60)}:{t % 60:04.1f}" for t in dead[:10])}' if dead else ''))
     # e. loudness and true peak of the delivered file (AAC overshoots; a peak above 0 dBFS clips on playback)
