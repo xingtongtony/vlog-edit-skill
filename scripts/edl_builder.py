@@ -408,6 +408,7 @@ class Builder:
                 if a == 'next': a = self.e['shots'][-1]['out']          # continue the take of the previous item
                 elif a is None: a = self.steady(clip, d)
                 if it.get('aerial'): extra = dict(extra, aerial=it['aerial'])
+                if it.get('bed'): extra = dict(extra, bed=it['bed'])            # natural sound under a silent shot
                 i = self.shot(clip, a, a + d, audio=it['audio'], note=it.get('note', 'VO B-roll'), back=back,
                               motion_ok=it.get('motion_ok', motion_ok), **extra)
             first = i if first is None else first
