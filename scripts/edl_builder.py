@@ -13,6 +13,10 @@
   * soft cuts (`soft=`, default 0): every change of clip dissolves unless the shot sets its own `xfade` or `cut=True`.
     Bali v1 used 0.35 and still felt abrupt, because sound and picture changed on the same frame. Keep 0: hard cuts with
     `jcut` / `lcut` sound bridges inside a scene, `xfade` only for a new day, island or town
+  * aerial shots only for big scenes (storytelling.md -> 航拍): every drone shot says why (`aerial=` first / shape / end /
+    title), never three in a row, at most two per place (places are split at `place()` stamps; titles not counted)
+  * no-narration moments (`quiet()`, `vo(quiet=)`): narration landing on one is an error; a warning when five minutes
+    pass without 20 s free of any words (storytelling.md -> 不配音的镜头)
 
     b = Builder(project, times={'c066': '2026-09-30T15:35'})
     b.begin_teaser(); ...; b.end_teaser()
@@ -28,6 +32,9 @@ import json, math, os, re, datetime
 # left the user waiting 1-2.6 s for every next subtitle while recording.
 VO_RATE = 4.5                                   # syllables per second of speech
 VO_PAUSE = {'sentence': 0.45, 'semi': 0.3, 'clause': 0.15, 'split': 0.0}
+AERIAL = {'first': 'first look at a new island / town / day', 'shape': 'a shape only visible from the air',
+          'end': 'the wide shot that closes a section', 'title': 'under the title, opening or ending'}
+BREATHE = (20.0, 300.0)                         # a stretch of >= 20 s without words at least every 5 minutes
 SUB_MAX = 16                                    # display width of one subtitle line (CJK 1, Latin letter 0.55)
 
 def syllables(text):
@@ -84,8 +91,8 @@ class Builder:
         self.photos = {p['id']: p for p in rd('photos.json', [])}
         self.times = {k: datetime.datetime.fromisoformat(v) for k, v in (times or {}).items()}
         self.e = {'project': project, 'size': [1920, 1080], 'fps': fps, 'look': look, 'shots': [], 'subtitles': [],
-                  'vo': [], 'cards': [], 'typewriter': [], 'fx': [], 'music': []}
-        self.allowed = []
+                  'vo': [], 'cards': [], 'typewriter': [], 'fx': [], 'music': [], 'quiet': []}
+        self.allowed, self.pending_quiet, self.legacy = [], None, None
         self.pending_cards, self.used, self.teaser, self.teaser_clips, self.last_t, self.warnings = [], {}, False, set(), None, []
 
     # ---------------- bookkeeping ----------------
@@ -185,7 +192,20 @@ class Builder:
         i = self.n - 1
         for card in self.pending_cards: card['shot'] = i; self.e['cards'].append(card)
         self.pending_cards = []
+        if self.pending_quiet:
+            q = self.pending_quiet; self.pending_quiet = None
+            self.e['quiet'].append({'shot': i, 'at': 0.0, 'dur': round(q['dur'] or self.dur(i), 2), 'why': q['why']})
         return i
+
+    def quiet(self, why, dur=None):
+        """No narration from the start of the next shot for `dur` seconds (default: that whole shot) - a moment to just
+        watch and hear: the first look at a big place, the highlight itself, a place whose sound is the point, a beat
+        after a heavy line, time passing. Talk and natural sound may run; narration on it is an error."""
+        self.pending_quiet = {'why': why, 'dur': dur}
+
+    def legacy_rules(self, why):
+        """For a cut made before the aerial rules (2026-10-25): its aerial problems are warnings, so it still builds."""
+        self.legacy = why
 
     def steady(self, clip, dur, lo=0.0, hi=None):
         """Start of the steadiest `dur`-second window in [lo, hi] that is not used yet."""
@@ -341,7 +361,7 @@ class Builder:
         return first
 
     # ---------------- narration over B-roll / photos ----------------
-    def vo(self, paras, broll, gap=0.6, lead=0.6, tail=1.0, xfade=0, beds=None, back=False, motion_ok=None, **first_kw):
+    def vo(self, paras, broll, gap=0.6, lead=0.6, tail=1.0, xfade=0, beds=None, back=False, motion_ok=None, quiet=None, **first_kw):
         """Narration laid over B-roll items: (clip, start[, audio[, seconds]]) or ('photo', pid[, caption]). An item
         with `seconds` keeps that length (a clip with only a short usable window); the others share the rest. A start of
         'next' continues the take where the previous item ended.
@@ -349,7 +369,10 @@ class Builder:
         breath; each is cut into short subtitle lines timed at the user's pace (VO_RATE, VO_PAUSE) and `gap` separates
         paragraphs. The block lasts as long as the speech needs plus air, shared by weight (see below).
         A subtitle stays up through the pause after it, so the box does not flicker between lines of one paragraph.
-        `back` / `motion_ok` apply to every B-roll item (e.g. to keep an order or a shot the user chose in Jianying)."""
+        `back` / `motion_ok` apply to every B-roll item (e.g. to keep an order or a shot the user chose in Jianying).
+        `quiet='why'` marks the `lead` seconds before the first word as a no-narration moment - the first look at a big
+        place gets lead=4-8 (storytelling.md -> 不配音的镜头). A dict item may carry `aerial=` like `shot()`."""
+        if quiet: self.pending_quiet = {'why': quiet, 'dur': lead}
         if isinstance(paras, str): paras = [paras]
         lines = []                              # (display text, speech seconds, pause after, paragraph id, paragraph)
         for p in paras:
@@ -384,6 +407,7 @@ class Builder:
                 clip, a, d = it['clip'], it.get('at'), it['len']
                 if a == 'next': a = self.e['shots'][-1]['out']          # continue the take of the previous item
                 elif a is None: a = self.steady(clip, d)
+                if it.get('aerial'): extra = dict(extra, aerial=it['aerial'])
                 i = self.shot(clip, a, a + d, audio=it['audio'], note=it.get('note', 'VO B-roll'), back=back,
                               motion_ok=it.get('motion_ok', motion_ok), **extra)
             first = i if first is None else first
@@ -471,6 +495,35 @@ class Builder:
                 x, y = s['in'] + max(a, t0) - t0, s['in'] + min(b, t1) - t0
                 said = ''.join(w['w'] for w in self.words(s['clip']) if w['s'] < y and w['e'] > x).strip()
                 if len(said) > 1: errs.append(f"narration '{v['text']}' talks over speech in {s['clip']} {x:.1f}-{y:.1f}s ('{said[:20]}')")
+        tc = lambda x: f'{int(x // 60)}:{x % 60:04.1f}'
+        # no narration on a no-narration moment
+        for q in self.e['quiet']:
+            a = start[q['shot']] + q['at']; b = a + q['dur']
+            for v in self.e['vo']:
+                x = start[v['shot']] + v['at']
+                if min(b, x + v['dur']) - max(a, x) > 0.05:
+                    errs.append(f"narration '{v['text']}' lands on a no-narration moment at {tc(a)} ({q['why']})")
+        # aerial shots only for big scenes: say why, never three in a row, at most two per place
+        drone = {i for i, s in enumerate(sh) if not s.get('photo') and self.clips.get(s['clip'], {}).get('kind') == 'drone'}
+        air = [f"shot {i} {sh[i]['clip']} at {tc(start[i])} is aerial without a reason: aerial= one of {', '.join(AERIAL)}"
+               for i in sorted(drone) if sh[i].get('aerial') not in AERIAL]
+        air += [f"shots {i - 2}-{i} at {tc(start[i - 2])}: three aerial shots in a row" for i in sorted(drone) if {i - 1, i - 2} <= drone]
+        cuts = sorted({c['shot'] for c in self.e['cards'] if c.get('kind') == 'place'}) + [self.n]
+        for a, b in zip(cuts, cuts[1:]):                # before the first stamp is the trailer: one best shot per stop
+            here = [i for i in sorted(drone) if a <= i < b and sh[i].get('aerial') != 'title']
+            if len(here) > 2: air.append(f"shots {a}-{b - 1} at {tc(start[a])}: {len(here)} aerial shots at one place (max 2: first look + ending)")
+        if self.legacy: self.warnings += [f'{m} (legacy: {self.legacy})' for m in air]
+        else: errs += air
+        # breathing: at least every five minutes, a stretch without any words
+        total, free, t = sum(self.dur(i) for i in range(self.n)), [], 0.0
+        for x, y, _ in sorted(text):
+            if x - t >= BREATHE[0]: free.append((t, x))
+            t = max(t, y)
+        if total - t >= BREATHE[0]: free.append((t, total))
+        edges = [0.0] + [e for f in free for e in f] + [total]
+        for a, b in zip(edges[::2], edges[1::2]):
+            if b - a > BREATHE[1]:
+                self.warnings.append(f"{tc(a)}-{tc(b)}: {(b - a) / 60:.1f} min without {BREATHE[0]:.0f} s free of words - leave a moment to just watch")
         # rhythm: four or more B-roll shots in a row within 0.4 s of each other read as a metronome
         run = []
         for i, s_ in enumerate(sh):

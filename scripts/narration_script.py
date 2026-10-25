@@ -3,7 +3,8 @@
 usage: python3 narration_script.py <edl.json> <render.mp4> <out.md> [<title>]
 Reads the shot start times the renderer wrote (<render.mp4>.timeline.json). Narration (`vo`) lines are bold with a
 suggested length; the user's own live lines (`subtitles`) are quotes; chapter cards become headings; music-free
-stretches are noted so the user knows where their voice will sit on natural sound only.
+stretches are noted so the user knows where their voice will sit on natural sound only; no-narration moments
+(`quiet`) are listed so the user sees where the film is meant to stay silent.
 """
 import json, os, sys
 
@@ -27,6 +28,8 @@ def main():
     for c in edl['cards']:
         if c.get('kind') == 'chapter':
             rows.append((tl[c['shot']], 0, f"\n## {c.get('kicker', '')} · {c['text']}" + (f"（{c['sub']}）" if c.get('sub') else '') + '\n'))
+    for q in edl.get('quiet', []):
+        rows.append((tl[q['shot']] + q.get('at', 0), 0, f"\n*— 不配音 {q['dur']:.0f} 秒：{q['why']} —*\n"))
     for m in edl['music']:
         if m.get('out_why'):
             rows.append((tl.get(m['to_shot'], 0), 0, f"\n*— 音乐停：{m['out_why']} —*\n"))
