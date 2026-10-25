@@ -92,5 +92,6 @@ Monplaisir（尤克里里）的这几张专辑整张都是 CC0，没用过的曲
 | 菲律宾薄荷岛（2026-10） | Monplaisir: On the road / Red Hair Blue Sky / Sincere Love / Stay Quiet / Hop / Time Gap / First / Je voudrais être un pigeon；Music for Creators: Summer Tropical House / Peaceful Background Acoustic / Happy Feel Good Acoustic Pop / Upbeat Inspiring Folk Acoustic Guitar |
 | 巴厘岛 v1（作废） | 同上一批，被片主否了 |
 | 巴厘岛 v2–v4 | Mixkit: Magical Moment / Traveling Along / A Happy Child / Forever in My Heart / Down the Hill / Slow Pop / Chillax / Relaxing Country / Swings and Slides / A Special Feeling；HoliznaCC0: Summer Felt Longer Then（FMA，CC0） |
+| 巴厘岛 v5（片主曲库，授权见本机 `music-library/LICENSES.md`） | replus《Hakumei》（主题，三段）、Chancla《Pode Ser》、Chancla, Oaty.《Búzios》、Youzee Music《春天是一首浪漫诗》、Erik Satie《Gymnopédie No.1》、Justin Hurwitz《Mia & Sebastian's Theme》、Seto《take me somewhere far away from here》、edbl, Joe Bae《breakfast in bed》、NeonMusic, 田由甲《春日海風》 |
 
 下一期先从 `projects/*/edl/*.json` 里列出用过的歌，排除掉再选。
