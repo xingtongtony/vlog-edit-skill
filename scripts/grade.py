@@ -1,11 +1,12 @@
-"""Colour grading: per-shot underwater correction + one global "look" (filmic tone, split toning, vignette, grain).
+"""Colour grading: per-clip underwater correction + one global "look" (filmic tone, split toning, vignette, grain).
 
 Underwater correction follows the usual recipe (water absorbs red first):
   1. red compensation  - add green into red in proportion to the red deficit (Ancuti-style, linearised as a channel mix)
-  2. gray-world white balance - per-channel gains so channel means meet
+  2. white balance towards a tropical-water target at 70 % strength - never neutral grey (deep blue water turns magenta)
   3. contrast stretch  - per-channel 0.5 / 99.5 percentile levels (a light dehaze)
   4. clarity + saturation + light denoise (lifting red lifts noise)
-Parameters are measured per shot from a few frames and stay constant within the shot (no flicker).
+Parameters are measured once per clip from a few frames and used for every shot of that clip (no flicker, and two shots
+of one clip never differ in colour).
 
 usage (preview a before/after board):
   python3 grade.py <out.jpg> <clip>:<t> [<clip>:<t> ...]

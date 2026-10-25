@@ -10,9 +10,9 @@
     direction (no back-and-forth); talking shots get looser limits. `motion_ok='why'` overrides after looking at it
   * on save: no title / chapter / end card while a subtitle is on screen; no shot without sound (drone, photo, mute)
     while no music plays - unless it carries a `bed` of natural sound from another clip
-  * soft cuts (`soft=0.35`): outside the teaser, every change of clip dissolves (picture and sound cross-fade) unless the
-    shot sets its own `xfade` or `cut=True`. A hard cut from one place to another read as "cut off, then a new shot jumps
-    in" (Bali feedback, 2026-10-23); a cut inside one continuous take stays hard
+  * soft cuts (`soft=`, default 0): every change of clip dissolves unless the shot sets its own `xfade` or `cut=True`.
+    Bali v1 used 0.35 and still felt abrupt, because sound and picture changed on the same frame. Keep 0: hard cuts with
+    `jcut` / `lcut` sound bridges inside a scene, `xfade` only for a new day, island or town
 
     b = Builder(project, times={'c066': '2026-09-30T15:35'})
     b.begin_teaser(); ...; b.end_teaser()
@@ -145,13 +145,20 @@ class Builder:
             kw['xfade'] = self.soft
         return kw
 
-    def shot(self, clip, a, b, audio='ambient', note='', back=False, motion_ok=None, **kw):
+    def _bed(self, bed, dur):
+        """bed=(clip, start): natural sound from another clip under a silent shot (a music-free stretch must not go silent)."""
+        if bed[1] + dur > self.clips[bed[0]]['duration'] - 0.05:
+            raise EditError(f"bed {bed[0]} {bed[1]}+{dur:.1f}s runs past the end of the clip ({self.clips[bed[0]]['duration']:.1f}s) - the rest is silence")
+        return {'clip': bed[0], 'in': bed[1]}
+
+    def shot(self, clip, a, b, audio='ambient', note='', back=False, motion_ok=None, bed=None, **kw):
         c = self.clips[clip]; b = min(b, c['duration'] - 0.05); a = max(0.0, a)
         kw = self._soften(clip, kw)
         prev = self.e['shots'][-1] if self.e['shots'] else None
         if prev and prev['clip'] == clip and 0 < a - prev['out'] < 0.5:
             a = prev['out']            # a 0.1 s skip inside one take reads as a stutter: make it continuous
         if b - a < 0.5: raise EditError(f'{clip} {a}-{b} too short')
+        if bed: kw['bed'] = self._bed(bed, b - a)
         self._motion(clip, a, b, audio == 'live', motion_ok)
         self._check(clip, a, b, back)
         if not c['audio'] and audio != 'mute': audio = 'mute'
@@ -159,11 +166,7 @@ class Builder:
         return self._placed()
 
     def photo(self, pid, dur=2.6, caption=None, note='', back=False, bed=None, **kw):
-        """bed=(clip, start): natural sound from another clip under the photo (a music-free stretch must not go silent)."""
-        if bed:
-            if bed[1] + dur > self.clips[bed[0]]['duration'] - 0.05:
-                raise EditError(f"bed {bed[0]} {bed[1]}+{dur:.1f}s runs past the end of the clip ({self.clips[bed[0]]['duration']:.1f}s) - the rest is silence")
-            kw['bed'] = {'clip': bed[0], 'in': bed[1]}
+        if bed: kw['bed'] = self._bed(bed, dur)
         p = self.photos[pid]; self._check(pid, 0, dur, back); kw = self._soften(pid, kw)
         self.e['shots'].append(dict(clip=pid, photo=p['file'], caption=caption, **{'in': 0.0, 'out': round(dur, 3)}, audio='mute', note=note or 'photo', **kw))
         return self._placed()

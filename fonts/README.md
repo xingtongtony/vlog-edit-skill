@@ -10,7 +10,7 @@
 
 | 文件 | 字体 | 风格 | 简 | 繁 | 用在哪 |
 |---|---|---|---|---|---|
-| `LXGWMarkerGothic-Regular.ttf` | 霞鹜漫黑 | 干净的马克笔手写 | ✓ | ✓ | 片名、章节卡的中文；封面竖排地名（箱根、镰仓那种手写） |
+| `LXGWMarkerGothic-Regular.ttf` | 霞鹜漫黑 | 干净的马克笔手写 | ✓ | ✓ | 封面竖排地名（箱根、镰仓那种手写）。视频片名不用：巴厘岛 v1"笔刷英文 + 马克笔中文"的片名被片主否了，片名见思源宋体 Black 那一行 |
 | `ZCOOLKuaiLe-Regular.ttf` | 站酷快乐体 | 粗圆手写，活泼 | ✓ | | 封面地名、系列名（喀什、帕米尔那种粗手写） |
 | `Yozai-Medium.ttf` | 悠哉字体 | 圆润随手写 | ✓ | ✓ | 轻松的手写标题、需要繁体的手写字 |
 | `Xiaolai-Regular.ttf` | 小赖字体 | 可爱手写 | ✓ | ✓ | 俏皮的小标题、贴纸感文字 |
@@ -29,7 +29,7 @@
 | `InstrumentSerif-Regular.ttf` / `InstrumentSerif-Italic.ttf` | 窄而精致的现代衬线（流行的新衬线，不是古典） | 签名式的英文地名（“Bohol, Philippines”）、杂志感的小标题 |
 | `InstrumentSans[wdth,wght].ttf` | 细而克制的无衬线（宽度、粗细可调） | 字距拉开的小标签（“TONY VLOG”“PHILIPPINES · 2026”） |
 | `Fredoka[wdth,wght].ttf` | 圆头粗体（粗细可调） | 圆润的“Vlog”（New Zealand 那种） |
-| `KaushanScript-Regular.ttf` | 粗笔刷手写 | “Tony Vlog”；片名里的英文地名、“Chapter One”、“See you, Bohol” |
+| `KaushanScript-Regular.ttf` | 粗笔刷手写 | 封面上的“Tony Vlog”。视频片名、章节卡、“See you”卡都不再用（见 `docs/storytelling.md` → 画面文字、整体结构） |
 | `Pacifico-Regular.ttf` | 圆润手写 | “Tony Vlog”（伊豆那种） |
 | `Caveat[wght].ttf` | 随手写的笔迹 | “LifeVlog”那种浅色手写 |
 | `PermanentMarker-Regular.ttf` | 马克笔 | 红色“vlog”涂写（青甘那种） |
