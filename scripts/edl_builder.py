@@ -452,16 +452,17 @@ class Builder:
             self.e['music'][-1]['to_shot'] = self.n; self.e['music'][-1]['out_why'] = why
     def music_state(self, state, at=0.0): self.e['music'][-1]['states'].append({'shot': self.n, 'at': at, 'state': state})
 
-    def end_on_last_bar(self, tail=0.6):
+    def end_on_last_bar(self, tail=0.6, after=0.0):
         """Call last, before save: the final song plays out to its own ending on the last frame instead of being faded
         out mid-phrase (an ending that "just stops" read as stiff, Bali 2026-10-23). Moves its start so that
-        track length - start = the time from its first shot to the end of the film."""
+        track length - start = the time from its first shot to the end of the film. `after`: seconds of natural sound
+        left after the song's ending (1-2 s of afterglow; the last shot needs live sound or a bed)."""
         import subprocess
         m = self.e['music'][-1]
         L = float(subprocess.run(['/opt/homebrew/bin/ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', m['path']],
                                  capture_output=True, text=True).stdout)
         run = sum(self.dur(i) for i in range(m['from_shot'], self.n)) - m.get('at_offset', 0)
-        m['start'] = round(max(0.0, L - run - tail), 2)
+        m['start'] = round(max(0.0, L - run - tail + after), 2)
 
     def _final_checks(self):
         t, start = 0.0, []
