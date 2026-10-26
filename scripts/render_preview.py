@@ -19,7 +19,7 @@ EDL (times in seconds; source times are positions inside the clip):
              "states": [{"shot": 12, "at": -0.2, "state": "none|low|full"}]}]   # one entry per song; a dict is also accepted
 }
 Music under live speech is ducked so it sits at least 18 dB under the measured voice (never above -13 dB of its own
-level); under narration it is ducked -13 dB. Shots with `ambient` sound play their natural sound louder (0.5) where
+level); under narration it is ducked about -7 dB (DUCK_VO), and after a talk shot it swells back into the B-roll. Shots with `ambient` sound play their natural sound louder (0.5) where
 no music plays. Photos can carry `"bed": {"clip": "c105", "in": 0}` - natural sound from another clip.
 Each clip gets one grade for all its shots (measured over every range of it the edit uses), so a clip never changes
 colour between two of its shots. Subtitles never overlap: each one ends where the next one starts. Overlays are burned per shot (a few inputs per
@@ -39,9 +39,10 @@ FONT = os.path.join(ROOT, 'fonts', 'ResourceHanRoundedCN-Light.ttf')
 LATIN = '/System/Library/Fonts/Avenir Next.ttc'
 SR = 48000
 GAIN = {'full': 1.0, 'low': 0.18, 'none': 0.0}
-DUCK = 0.22          # music gain under speech / narration
+DUCK = 0.22          # music gain under live speech at most (the measured voice decides, see VOICE_OVER_MUSIC_DB)
+DUCK_VO = 0.45       # under narration about -7 dB: the music stays "full" (reference films ~6 dB; Bali v5 at -13 dB read as "音乐都有点小")
 AUDIO_GAIN = {'live': 1.0, 'half': 0.45, 'ambient': 0.12, 'mute': 0.0}
-MUSIC_RMS = 10 ** (-20 / 20)  # every song is levelled to this before its gain: a loud master must not bury speech
+MUSIC_RMS = 10 ** (-17 / 20)  # every song is levelled to this before its gain: a loud master must not bury speech
 AMBIENT_NO_MUSIC = 0.5   # natural sound is the only sound there - it has to be heard
 VOICE_OVER_MUSIC_DB = 18 # live speech stays this far above the music under it
 BED_RMS = 10 ** (-30 / 20)   # a natural-sound bed under a photo sits at about -30 dBFS RMS
@@ -729,11 +730,23 @@ def main():
         for i, s in enumerate(shots):          # live speech: music at least VOICE_OVER_MUSIC_DB under the measured voice
             if s.get('audio') != 'live': continue
             j = slice(int(tl[i] * sr_t), int(ends[i] * sr_t)); v, mu = rms(mix[j]), rms(music[j])
-            spans.append((tl[i], ends[i], min(DUCK, 10 ** (-VOICE_OVER_MUSIC_DB / 20) * v / mu) if mu > 1e-6 else DUCK))
-        spans += [(tl[v['shot']] + v.get('at', 0) - 0.25, tl[v['shot']] + v.get('at', 0) + v.get('dur', vo_duration(v['text'])) + 0.35, DUCK) for v in edl.get('vo', [])]
-        for a, b, f in spans:
-            g = np.clip(np.minimum((t_ax - (a - 0.3)) / 0.3, ((b + 0.3) - t_ax) / 0.3), 0, 1)   # 0.3 s ramps
+            spans.append((tl[i], ends[i], min(DUCK, 10 ** (-VOICE_OVER_MUSIC_DB / 20) * v / mu) if mu > 1e-6 else DUCK, True))
+        spans += [(tl[v['shot']] + v.get('at', 0) - 0.25, tl[v['shot']] + v.get('at', 0) + v.get('dur', vo_duration(v['text'])) + 0.35, DUCK_VO, False)
+                  for v in edl.get('vo', [])]
+        for a, b, f, live in spans:
+            # 0.3 s down before speech; after a talk shot the music swells back over the first second of the next shot,
+            # so the B-roll comes out on the music. Starting the swell inside the talk shot (Bali v6, 0.6 s early) let a
+            # full-level song cover quiet voices: five talk shots fell to 5-14 dB over the music
+            up = ((b + 1.0) - t_ax) / 1.0 if live else ((b + 0.3) - t_ax) / 0.3
+            g = np.clip(np.minimum((t_ax - (a - 0.3)) / 0.3, up), 0, 1)
             duck = np.minimum(duck, 1 - (1 - max(f, 0.02)) * g)
+        # no-narration moments (the edit's `quiet`): the music lifts 3 dB over 1 s ramps - the moment to just watch and
+        # listen (Bali v6: "衬托氛围的情况，音乐声可以大一些")
+        QUIET_LIFT = 10 ** (3 / 20)            # here, not at the top: the top of the file is part of the picture fingerprint
+        for q in edl.get('quiet', []):
+            a = tl[q['shot']] + q.get('at', 0); b = a + q['dur']
+            g = np.clip(np.minimum((t_ax - (a - 1.0)) / 1.0, ((b + 1.0) - t_ax) / 1.0), 0, 1)
+            duck = duck * (1 + (QUIET_LIFT - 1) * g)
         voice_db = []
         for i, s in enumerate(shots):
             if s.get('audio') != 'live': continue
