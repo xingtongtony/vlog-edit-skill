@@ -645,6 +645,7 @@ def overlays_for(edl, tl, shots, fps, W, H, tmp):
         p = f'{tmp}/sub{k}.png'; subtitle_png(text, W, H, p); add(p, a, b, 0.08)
     for k, cd in enumerate(edl.get('cards', [])):
         a = tl[cd['shot']] + cd.get('at', 0); b = a + cd['dur']
+        if cd.get('kind') == 'title' and cd.get('style') == 'kinetic': continue     # an alpha movie (kinetic_titles), not a PNG
         if cd.get('kind') == 'title' and cd.get('style') == 'stamp':      # glyph by glyph in, glyph by glyph out
             ps = stamp_title_pngs(cd, W, H, tmp, k); order = np.random.default_rng(k).permutation(len(ps))
             for j, p in enumerate(ps): ovs.append((p, a + j * 0.09, b - order[j] * 0.07, 0.35, 0.3))
@@ -660,6 +661,19 @@ def overlays_for(edl, tl, shots, fps, W, H, tmp):
             b = a + j * step if j < len(txt) else a + cd['dur']
             ovs.append((p, a + (j - 1) * step, b, 0.0, 0.0 if j < len(txt) else 0.3))
     return ovs
+
+def kinetic_titles(edl, tl, W, H, fps, tmp):
+    """Film titles in the style the user chose (2026-10-27): `style='kinetic'`, `pair` from kinetic_type.PAIRS (default
+    'tall': Big Shoulders light capitals over 资源圆体 Light, the same ink width), animated like the user's Bohol title.
+    Returns [(alpha movie, start, dur, card index)]."""
+    import kinetic_type
+    out = []
+    for k, cd in enumerate(edl.get('cards', [])):
+        if cd.get('kind') == 'title' and cd.get('style') == 'kinetic':
+            p = f'{tmp}/ktitle{k}.mov'
+            kinetic_type.render(cd.get('pair', 'tall'), p, cd['dur'], cd['text'], cd.get('latin', ''), W, H, fps, y=cd.get('y', 0.5))
+            out.append((p, tl[cd['shot']] + cd.get('at', 0), cd['dur'], k))
+    return out
 
 def visual_fingerprint(edl):
     """Hash of everything that decides the picture. Same hash = the video of an earlier render can be reused when only
@@ -704,6 +718,8 @@ def main():
     workers = int(sys.argv[sys.argv.index('--workers') + 1]) if '--workers' in sys.argv else 4
     W, H = edl.get('size', [1920, 1080]); fps = edl.get('fps', 30)
     clips = {c['id']: c for c in json.load(open(os.path.join(edl['project'], 'ingest', 'clips.json')))}
+    for cid, r in (edl.get('renders') or {}).items():            # sequences rendered elsewhere (edl_builder.rendered)
+        clips[cid] = {'id': cid, 'path': r['path'], 'duration': r['duration'], 'audio': True, 'kind': 'render'}
     if '--sources' in sys.argv:                     # local copies made by cache_sources.py (the external drive may drop off)
         src_dir = os.path.expanduser(sys.argv[sys.argv.index('--sources') + 1])
         for c in clips.values():
@@ -740,6 +756,7 @@ def main():
             if fx['type'] != 'leak': continue
             d = fx.get('dur', 0.9); a = tl[fx['cut']] - d / 2; p = f'{tmp}/leak{k}.mov'
             make_leak(p, d, fps, seed=k, warmth=fx.get('warmth', 1.0)); leaks.append((p, a, d, k, fx.get('warmth', 1.0)))
+        ktitles = kinetic_titles(edl, tl, W, H, fps, tmp)
 
         # one grade per clip, measured over every range of it the edit uses (two shots of one clip must match)
         clip_grade = {}
@@ -749,6 +766,7 @@ def main():
             modes = {s.get('grade', 'auto') for s in uses}
             mode = modes.pop() if len(modes) == 1 else 'auto'
             if mode == 'auto' and clips[cid].get('kind') == 'drone': mode = 'none'   # sea seen from the air reads as "underwater"
+            if clips[cid].get('kind') == 'render': clip_grade[cid] = ''; continue    # graded when it was made
             clip_grade[cid] = grade.clip_filter(clips[cid]['path'], ts, mode=mode, look=edl.get('look', 'film'))
         music_on = [False] * len(shots)
         for m in (edl.get('music') or []):
@@ -770,6 +788,9 @@ def main():
             for p, a, d, k, warm in leaks:
                 if a + d <= t0 or a >= t1: continue
                 h.update(f'leak {k} {warm} {d:.3f} {a - t0:.3f}'.encode())
+            for p, a, d, k in ktitles:
+                if a + d <= t0 or a >= t1: continue
+                h.update(f'ktitle {json.dumps(edl["cards"][k], sort_keys=True, ensure_ascii=False)} {a - t0:.3f}'.encode())
             return h.hexdigest()[:20]
         def render_shot(i):
             s = shots[i]; n = round((s['out'] - s['in']) * fps); t0, t1 = tl[i], ends[i]
@@ -824,6 +845,12 @@ def main():
                 inputs += (['-ss', f'{t0 - a:.3f}'] if a < t0 else []) + ['-i', p]
                 shift = f',setpts=PTS-STARTPTS+{a - t0:.3f}/TB' if a >= t0 else ',setpts=PTS-STARTPTS'
                 fc.append(f'[{idx}:v]scale={W}:{H},format=rgba,gblur=sigma={round(28 * H / 1080)}{shift}[o{idx}]')
+                fc.append(f'[{last}][o{idx}]overlay=0:0:eof_action=pass[v{idx}]'); last = f'v{idx}'; idx += 1
+            for p, a, d, _ in ktitles:                         # the film title, an alpha movie that may span a cut
+                if a + d <= t0 or a >= t1: continue
+                inputs += (['-ss', f'{t0 - a:.3f}'] if a < t0 else []) + ['-i', p]
+                shift = f',setpts=PTS-STARTPTS+{a - t0:.3f}/TB' if a >= t0 else ',setpts=PTS-STARTPTS'
+                fc.append(f'[{idx}:v]format=rgba{shift}[o{idx}]')
                 fc.append(f'[{last}][o{idx}]overlay=0:0:eof_action=pass[v{idx}]'); last = f'v{idx}'; idx += 1
             enc = inputs + ['-filter_complex', ';'.join(fc), '-map', f'[{last}]', '-an',
                    '-frames:v', str(n), '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-maxrate', '16M', '-bufsize', '32M', '-bf', '0', '-g', str(fps),

@@ -201,6 +201,18 @@ class Builder:
         self.e['shots'].append(dict(clip=clip, **{'in': round(a, 3), 'out': round(b, 3)}, audio=audio, note=note, **kw))
         return self._placed()
 
+    def rendered(self, cid, path, note='', **kw):
+        """A sequence rendered elsewhere (a designed opening, scripts/opening.py), played as it is: its own picture and
+        sound, no grade. The EDL carries it under 'renders' so the renderer and the Jianying export find it."""
+        d = float(subprocess.run(['/opt/homebrew/bin/ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', path],
+                                 capture_output=True, text=True, check=True).stdout.strip())
+        st = os.stat(path)
+        self.clips[cid] = {'id': cid, 'path': path, 'duration': d, 'audio': True, 'kind': 'render', 'name': os.path.basename(path), 'time': ''}
+        self.e.setdefault('renders', {})[cid] = {'path': path, 'duration': d}
+        self.e['shots'].append(dict(clip=cid, **{'in': 0.0, 'out': round(d - 0.05, 3)}, audio='live', grade='none', note=note or 'rendered',
+                                    src=f'{st.st_size}-{int(st.st_mtime)}', **kw))      # src: a re-rendered file re-renders the shot
+        return self._placed()
+
     def photo(self, pid, dur=2.6, caption=None, note='', back=False, bed=None, **kw):
         if bed: kw['bed'] = self._bed(bed, dur)
         p = self.photos[pid]; self._check(pid, 0, dur, back); kw = self._soften(pid, kw)

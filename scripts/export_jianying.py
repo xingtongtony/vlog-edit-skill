@@ -63,6 +63,8 @@ def main():
     edl = json.load(open(edl_p)); fps = edl.get('fps', 30); W, H = edl.get('size', [1920, 1080])
     proj = edl['project']; sub = os.path.basename(os.path.normpath(proj))
     clips = {c['id']: c for c in json.load(open(os.path.join(proj, 'ingest', 'clips.json')))}
+    for cid, r in (edl.get('renders') or {}).items():            # sequences rendered elsewhere (edl_builder.rendered)
+        clips[cid] = {'id': cid, 'path': r['path'], 'duration': r['duration'], 'audio': True, 'kind': 'render'}
     shots = edl['shots']
     starts, t = [], 0
     for s in shots: starts.append(t); t += round((s['out'] - s['in']) * fps)
@@ -79,7 +81,7 @@ def main():
         uses = [s for s in shots if s['clip'] == cid]
         ts = [x for s in uses for x in np.linspace(s['in'] + 0.1, max(s['in'] + 0.1, s['out'] - 0.1), 3)]
         modes = {s.get('grade', 'auto') for s in uses}
-        cg[cid] = grade.clip_filter(clips[cid]['path'], ts, mode=modes.pop() if len(modes) == 1 else 'auto', look=look)
+        cg[cid] = '' if clips[cid].get('kind') == 'render' else grade.clip_filter(clips[cid]['path'], ts, mode=modes.pop() if len(modes) == 1 else 'auto', look=look)
     jobs = []
     for i, s in enumerate(shots):
         if s.get('photo'): continue
@@ -174,6 +176,15 @@ def main():
         seg = jy.VideoSegment(p, jy.Timerange(us(a), us(d)), volume=0.0); seg.set_mix_mode(MixModeType.滤色)
         script.add_segment(seg, '漏光')
 
+    # ---- 3b. the film title (style 'kinetic'): white type animated over black, screen blend like the leaks
+    from render_preview import kinetic_titles
+    for p, a, d, k in kinetic_titles(edl, tl, W, H, fps, out('overlays')):
+        mp4 = p[:-4] + '.mp4'
+        run([FF, '-y', '-f', 'lavfi', '-i', f'color=black:s={W}x{H}:r={fps}:d={d:.3f}', '-i', p, '-filter_complex',
+             '[1:v]format=rgba[t];[0:v][t]overlay=0:0,format=yuv420p', '-t', f'{d:.3f}', '-c:v', 'libx264', '-crf', '14', mp4]); os.remove(p)
+        seg = jy.VideoSegment(mp4, jy.Timerange(us(a), us(d)), volume=0.0); seg.set_mix_mode(MixModeType.滤色)
+        script.add_segment(seg, '漏光')
+
     # ---- 4. subtitles / narration / cards / stamps: the renderer's own PNGs
     srt = []
     for k, (a, b, text) in enumerate(text_spans(edl, tl, shots)):
@@ -182,6 +193,7 @@ def main():
         script.add_segment(seg, '字幕'); srt.append(f'{k + 1}\n{srt_time(a)} --> {srt_time(b)}\n{text}\n')
     items = []
     for k, c in enumerate(edl.get('cards', [])):
+        if c.get('style') == 'kinetic': continue                 # placed above as a movie
         p = out('overlays', f'card{k:02d}.png'); card_png(c, W, H, p)
         items.append((tl[c['shot']] + c.get('at', 0), c['dur'], p, 0.35 if c.get('kind') != 'label' else 0.25))
     for k, tw in enumerate(edl.get('typewriter', [])):

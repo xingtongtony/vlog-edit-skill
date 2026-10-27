@@ -26,7 +26,7 @@ def regular(f):
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(FONTS, 'specimen.png')
     rows = []
-    for p in sorted(glob.glob(os.path.join(FONTS, '*.ttf'))):
+    for p in sorted(glob.glob(os.path.join(FONTS, '*.ttf')) + glob.glob(os.path.join(FONTS, '*.otf'))):   # .otf too: 思源宋体 Black was missing
         try: f = ImageFont.truetype(p, 56)
         except OSError: rows.append((os.path.basename(p), None, 'unreadable (still downloading?)')); continue
         simp = not missing(f, SIMPLIFIED); trad = not missing(f, TRADITIONAL)

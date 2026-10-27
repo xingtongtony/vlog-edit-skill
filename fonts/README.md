@@ -16,7 +16,7 @@
 | `Xiaolai-Regular.ttf` | 小赖字体 | 可爱手写 | ✓ | ✓ | 俏皮的小标题、贴纸感文字 |
 | `SmileySans-Oblique.ttf` | 得意黑 | 窄而有力的斜黑体 | ✓ | | 现代感标题、标签；封面底部白色系列名（“搓泥…环游记”） |
 | `ZCOOLQingKeHuangYou-Regular.ttf` | 站酷庆科黄油体 | 粗壮、圆润的标题字（缺“·”） | ✓ | ✓ | 需要繁体的粗标题 |
-| `NotoSerifSC-Black.otf` | 思源宋体 Black | 最粗的宋体；只配合做旧纹理用在片名上 | ✓ | | 片名中文（片主 2026-10-23 在剪映里自己选的薄荷岛片名就是做旧粗宋 + 做旧圆粗英文，逐字出现。这是片主指定的例外，不要拿它做别的） |
+| `NotoSerifSC-Black.otf` | 思源宋体 Black | 最粗的宋体；只配合做旧纹理用 | ✓ | | 薄荷岛那期的片名中文（片主在剪映里自己选的做旧粗宋）。2026-10-27 起片名改用 Big Shoulders + 资源圆体，这款只在要和薄荷岛做成一个系列时用 |
 | `ResourceHanRoundedCN-Light.ttf` | 资源圆体 细 | 圆体 | ✓ | ✓ | 视频字幕（规格见 `docs/storytelling.md`）；封面上下两条的小字说明（字距拉开） |
 
 ## 英文
@@ -24,7 +24,7 @@
 | 文件 | 风格 | 用在哪 |
 |---|---|---|
 | `Anton-Regular.ttf` | 窄而极粗的展示字 | 封面主角大字：英文地名铺满整条（PHUKET、Vietnam 那种），常放在人物后面 |
-| `BigShoulders[opsz,wght].ttf` | 又高又窄，从极细到极粗（粗细可调） | 细高的“VLOG”（youyou 那种），或粗的竖向大字 |
+| `BigShoulders[opsz,wght].ttf` | 又高又窄，从极细到极粗（粗细可调） | **片名英文**（字重 300，配资源圆体 细，中英文等宽，片主 2026-10-27 选定）；开头 behind 的大号地名（字重 800）；细高的“VLOG”（youyou 那种） |
 | `BricolageGrotesque[opsz,wdth,wght].ttf` | 有性格的现代无衬线（宽度、粗细可调） | 现代感标题、编号 |
 | `InstrumentSerif-Regular.ttf` / `InstrumentSerif-Italic.ttf` | 窄而精致的现代衬线（流行的新衬线，不是古典） | 签名式的英文地名（“Bohol, Philippines”）、杂志感的小标题 |
 | `InstrumentSans[wdth,wght].ttf` | 细而克制的无衬线（宽度、粗细可调） | 字距拉开的小标签（“TONY VLOG”“PHILIPPINES · 2026”） |
