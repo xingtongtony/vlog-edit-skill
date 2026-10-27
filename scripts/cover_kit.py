@@ -35,7 +35,10 @@ class Kit:
         """Full-resolution frame at t, graded like the cut."""
         dst = os.path.join(self.out, 'frames', f'{clip}_{t}.png')
         if not os.path.exists(dst):
-            src = self.clips[clip]['path']; g = grade.clip_filter(src, [t - 1, t, t + 1], look='film')
+            src = self.clips[clip]['path']
+            if not os.path.exists(src):   # the external drive is out: the cut's clips are cached by cache_sources.py
+                src = os.path.join(self.project, 'sources', os.path.basename(src))
+            g = grade.clip_filter(src, [t - 1, t, t + 1], look='film')
             # format=yuv420p: graded in 10 bit, DJI drone HEVC comes out black (same fix as render_preview.py)
             subprocess.run([FF, '-nostdin', '-loglevel', 'error', '-y', '-ss', str(t), '-i', src, '-frames:v', '1']
                            + (['-vf', 'format=yuv420p,' + g] if g else []) + [dst], check=True)
@@ -165,5 +168,30 @@ def triptych_signature(kit, out, strips, big, name, name_color=NAVY, strip=1, se
     l, tp, r, b = vf.getbbox(big); y = strip * SH + 34 - tp; text(img, (M - l, y), big, vf)
     base = y + vf.getmetrics()[0]
     text(img, (M - l + r + 30, base - nf.getmetrics()[0]), name, nf, fill=name_color)
+    if series: series_label(img, series)
+    img.save(kit.path(out), quality=95)
+
+def triptych_breakout(kit, out, strips, word, place='', hook='', word_h=250, place_color=WHITE, hook_color=YELLOW,
+                      hook_y=44, tag='', series='', cut='subject'):
+    """Three strips; the person in the middle one breaks out of it - head over the top strip, in front of the place
+    name standing on the top strip's lower edge (the '越南 Vietnam 15天2k' cover the user liked). A Chinese place name
+    top right, a handwritten hook in the middle strip. Give the middle strip a zoom (2-2.5) and a cy that puts its top
+    edge across the face: whatever of the subject is above that edge breaks out. The word is left-aligned, so put the
+    person on the right (cx)."""
+    img = Image.new('RGB', (W, H)); boxes = []
+    for k, (clip, t, cx, cy, *z) in enumerate(strips):
+        box = window(kit.frame(clip, t), (W, SH), cx, cy, z[0] if z else 1.0); boxes.append(box)
+        img.paste(kit.frame(clip, t).crop(box).resize((W, SH), Image.LANCZOS), (0, k * SH))
+    name, axes = 'BricolageGrotesque[opsz,wdth,wght].ttf', dict(opsz=96, wght=800)
+    f = font(name, 400, **axes); l, tp, r, b = f.getbbox(word)
+    f = font(name, int(400 * word_h / (b - tp)), **axes); l, tp, r, b = f.getbbox(word)
+    text(img, (M - l, SH - 30 - b), word, f)
+    clip, t = strips[1][:2]; x0, y0, x1, y1 = boxes[1]; s = W / (x1 - x0)
+    ext = (x0, round(y0 - min(y0, SH / s)), x1, y1); size = (W, round((y1 - ext[1]) * s))
+    pic = kit.frame(clip, t).crop(ext).resize(size, Image.LANCZOS)
+    img.paste(pic, (0, 2 * SH - size[1]), kit.subject(clip, t, cut).crop(ext).resize(size, Image.LANCZOS))
+    if place: text(img, (W - M, 52), place, font('SmileySans-Oblique.ttf', 112), fill=place_color, anchor='r')
+    if hook: text(img, (M, SH + hook_y), hook, font('LXGWMarkerGothic-Regular.ttf', 88), fill=hook_color)
+    if tag: text(img, (M, 40), tag, font('InstrumentSans[wdth,wght].ttf', 22, wght=600), track=6)
     if series: series_label(img, series)
     img.save(kit.path(out), quality=95)
