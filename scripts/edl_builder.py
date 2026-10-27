@@ -25,7 +25,7 @@
     b.photo('p084', 3.0, caption='TARSIER · LOBOC')
     b.save('edl/full.json')
 """
-import copy, difflib, json, math, os, re, datetime
+import copy, difflib, json, math, os, re, subprocess, datetime
 
 # Narration pacing, measured 2026-10-19: the user reads at 4.0-4.6 syllables/s; a reference creator's narration runs
 # 4.7/s overall with 0.4-0.6 s between sentences. The old timing (chars/4.2 + 0.7 s per line, + 0.6 s between lines)
@@ -94,6 +94,14 @@ class Builder:
         rd = lambda f, d: json.load(open(os.path.join(ing, f))) if os.path.exists(os.path.join(ing, f)) else d
         self.stab = rd('stability.json', {}); self.dups = rd('duplicates.json', {}); self.motion = rd('motion.json', {})
         self.photos = {p['id']: p for p in rd('photos.json', [])}
+        # an iPhone clip the user edited in Photos (IMG_E1234 next to IMG_1234) is the same footage turned, cropped or
+        # trimmed: one footage for the reuse check, and the original is refused when the user turned it (Bali v8 showed
+        # IMG_9931's cow lying sideways in a portrait frame, then IMG_E9931's upright cow right after - the same 3 s twice)
+        names = {c['name'].upper(): k for k, c in self.clips.items()}; self.edited, self._orient = {}, {}
+        for k, c in self.clips.items():
+            m = re.match(r'IMG_(\d+)(\.\w+)$', c['name'], re.I)
+            e = names.get(f'IMG_E{m.group(1)}{m.group(2)}'.upper()) if m else None
+            if e: self.edited[k] = e; self.dups.setdefault(k, self.dups.get(e, e))
         self.times = {k: datetime.datetime.fromisoformat(v) for k, v in (times or {}).items()}
         self.e = {'project': project, 'size': [1920, 1080], 'fps': fps, 'look': look, 'shots': [], 'subtitles': [],
                   'vo': [], 'cards': [], 'typewriter': [], 'fx': [], 'music': [], 'quiet': [], 'voices': []}
@@ -163,8 +171,24 @@ class Builder:
             raise EditError(f"bed {bed[0]} {bed[1]}+{dur:.1f}s runs past the end of the clip ({self.clips[bed[0]]['duration']:.1f}s) - the rest is silence")
         return {'clip': bed[0], 'in': bed[1]}
 
+    def _portrait(self, clip):
+        """True portrait / False landscape / None square or unknown, as shown (read from the proxy: ingest autorotates, as
+        the renderer does). A square edit is a crop (Live Photo videos follow the photo's crop), not a turn."""
+        if clip not in self._orient:
+            p = os.path.join(self.project, 'ingest', 'proxy', f'{clip}.mp4')
+            out = subprocess.run(['/opt/homebrew/bin/ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height',
+                                  '-of', 'csv=p=0', p], capture_output=True, text=True).stdout.strip() if os.path.exists(p) else ''
+            self._orient[clip] = (lambda w, h: None if abs(w - h) < 0.05 * w else h > w)(*map(int, out.split(','))) if out else None
+        return self._orient[clip]
+
     def shot(self, clip, a, b, audio='ambient', note='', back=False, motion_ok=None, bed=None, **kw):
         c = self.clips[clip]; b = min(b, c['duration'] - 0.05); a = max(0.0, a)
+        if clip in self.edited:
+            e = self.edited[clip]; po, pe = self._portrait(clip), self._portrait(e)
+            if po is not None and pe is not None and po != pe:
+                raise EditError(f"{clip} ({c['name']}) plays {'portrait' if po else 'landscape'}, but the user turned it in Photos: "
+                                f"{e} ({self.clips[e]['name']}) is {'portrait' if pe else 'landscape'} - use {e}")
+            self.warnings.append(f"{clip}: the user edited this clip in Photos ({e}, {self.clips[e]['name']}) - prefer the edit")
         kw = self._soften(clip, kw)
         prev = self.e['shots'][-1] if self.e['shots'] else None
         if prev and prev['clip'] == clip and 0 < a - prev['out'] < 0.5:
