@@ -498,7 +498,7 @@ def frame_count(path):
 def slice_edl(edl, a, b):
     """Shots a..b-1 of an EDL with everything that hangs off them re-indexed (render one section to check it)."""
     e = dict(edl); e['shots'] = edl['shots'][a:b]
-    for k in ('subtitles', 'vo', 'cards', 'typewriter'):
+    for k in ('subtitles', 'vo', 'cards', 'typewriter', 'voices', 'quiet'):    # voices: Bali v7's section render crashed without
         e[k] = [dict(x, shot=x['shot'] - a) for x in edl.get(k, []) if a <= x['shot'] < b]
     e['fx'] = [dict(x, cut=x['cut'] - a) for x in edl.get('fx', []) if a < x['cut'] < b]
     e['music'] = []
@@ -524,6 +524,9 @@ def main():
         for c in clips.values():
             local = os.path.join(src_dir, os.path.basename(c['path']))
             if os.path.exists(local): c['path'] = local
+        for s in edl['shots']:                      # photos too: Bali v7 stopped on a photo while the drive was out
+            local = os.path.join(src_dir, os.path.basename(s.get('photo') or ''))
+            if s.get('photo') and os.path.exists(local): s['photo'] = local
     shots = edl['shots']
     starts, t = [], 0
     for s in shots: starts.append(t); t += round((s['out'] - s['in']) * fps)
@@ -712,6 +715,27 @@ def main():
                 if m <= 0: continue
                 ramp = np.linspace(0, 1, m) if kind == 'jcut' else np.linspace(1, 0, m)
                 mix[at:at + m] = mix[at:at + m] * (1 - 0.6 * ramp)[:, None] + x[:m] * ramp[:, None]
+        # the user's recorded narration (`voices`, edl_builder.use_narration): one cleaned take per paragraph, placed
+        # where its subtitles start; everything under it - the shots' own sound and the music - is measured against the
+        # voice and held NARRATION_OVER_MUSIC_DB below it
+        NARRATION_OVER_MUSIC_DB = 12            # here, not at the top: the top of the file is part of the picture fingerprint
+        rms = lambda x: float(np.sqrt(np.mean(x ** 2)) + 1e-9)
+        voice = np.zeros_like(mix); vspans = []
+        for vc in edl.get('voices', []):
+            _, x = wavfile.read(vc['path']); x = x.astype(np.float32) / 32768
+            if x.ndim == 1: x = np.repeat(x[:, None], 2, axis=1)
+            at = int((tl[vc['shot']] + vc['at']) * sr_t); m = min(len(x), N - at)
+            if m > 0: voice[at:at + m] += x[:m]; vspans.append((at, at + m))
+        # the shots' own sound under the narration: a beach club's music on the B-roll sat 3 dB under the voice (Bali
+        # v7, Finns) - only the music used to be ducked. 0.3 s ramps, like the music
+        own = np.ones(N, np.float32)
+        for a0, b0 in vspans:
+            f = min(1.0, 10 ** (-NARRATION_OVER_MUSIC_DB / 20) * rms(voice[a0:b0]) / rms(mix[a0:b0]))
+            if f < 1:
+                g = np.clip(np.minimum((t_ax - (a0 / sr_t - 0.3)) / 0.3, ((b0 / sr_t + 0.3) - t_ax) / 0.3), 0, 1)
+                own = np.minimum(own, 1 - (1 - f) * g)
+        mix = mix * own[:, None]; bed = mix.copy()
+        mix = mix + voice
         tracks = edl.get('music') or []
         if isinstance(tracks, dict): tracks = [dict(tracks, from_shot=tracks.get('at_shot', 0))]
         music = np.zeros_like(mix)
@@ -725,7 +749,6 @@ def main():
             lead = int(a * sr_t); x = np.pad(x, ((lead, max(0, N - len(x) - lead)), (0, 0)))[:N]
             music += x * env[:, None] * m.get('gain', 0.55)
         duck = np.ones(N, np.float32)
-        rms = lambda x: float(np.sqrt(np.mean(x ** 2)) + 1e-9)
         spans = []
         for i, s in enumerate(shots):          # live speech: music at least VOICE_OVER_MUSIC_DB under the measured voice
             if s.get('audio') != 'live': continue
@@ -733,6 +756,9 @@ def main():
             spans.append((tl[i], ends[i], min(DUCK, 10 ** (-VOICE_OVER_MUSIC_DB / 20) * v / mu) if mu > 1e-6 else DUCK, True))
         spans += [(tl[v['shot']] + v.get('at', 0) - 0.25, tl[v['shot']] + v.get('at', 0) + v.get('dur', vo_duration(v['text'])) + 0.35, DUCK_VO, False)
                   for v in edl.get('vo', [])]
+        for a0, b0 in vspans:                   # recorded narration: music NARRATION_OVER_MUSIC_DB under the measured voice
+            v, mu = rms(voice[a0:b0]), rms(music[a0:b0])
+            spans.append((a0 / sr_t, b0 / sr_t, min(DUCK_VO, 10 ** (-NARRATION_OVER_MUSIC_DB / 20) * v / mu) if mu > 1e-6 else DUCK_VO, False))
         for a, b, f, live in spans:
             # 0.3 s down before speech; after a talk shot the music swells back over the first second of the next shot,
             # so the B-roll comes out on the music. Starting the swell inside the talk shot (Bali v6, 0.6 s early) let a
@@ -753,6 +779,9 @@ def main():
             j = slice(int(tl[i] * sr_t), int(ends[i] * sr_t)); mu = rms(music[j] * duck[j, None])
             if mu > 1e-5: voice_db.append((i, 20 * np.log10(rms(mix[j]) / mu)))
         json.dump(voice_db, open(out + '.voice.json', 'w'))
+        narr_db = [(k, 20 * np.log10(rms(voice[a0:b0]) / rms(bed[a0:b0] + music[a0:b0] * duck[a0:b0, None]))) for k, (a0, b0) in enumerate(vspans)
+                   if rms(bed[a0:b0] + music[a0:b0] * duck[a0:b0, None]) > 1e-5]
+        json.dump(narr_db, open(out + '.narration.json', 'w'))
         mix = mix + music * duck[:, None]
         wavfile.write(f'{tmp}/mix.wav', SR, (np.clip(mix, -1, 1) * 32767).astype(np.int16))
         # two-pass loudness: measure, then one linear gain (no pumping) + limiter. The old one-pass dynamic loudnorm
@@ -836,6 +865,12 @@ def verify(out, edl, clips, tl, total):
         low = [(i, db) for i, db in json.load(open(vp)) if db < 15]
         ok &= not low
         print(f"  {'✓' if not low else '✗'} live speech over music: " + (f'all {len(json.load(open(vp)))} shots >= 15 dB' if not low else ', '.join(f'shot {i} {db:.0f} dB' for i, db in low)))
+    # d1. recorded narration over everything under it (the shots' own sound and the music): at least 10 dB
+    npth = out + '.narration.json'
+    if os.path.exists(npth) and edl.get('voices'):
+        nd = json.load(open(npth)); low = [(k, db) for k, db in nd if db < 10]
+        ok &= not low
+        print(f"  {'✓' if not low else '✗'} narration over the sound under it: " + (f'all {len(nd)} paragraphs >= 10 dB (lowest {min(db for _, db in nd):.0f} dB)' if not low else ', '.join(f'paragraph {k + 1} {db:.0f} dB' for k, db in low)))
     # d2. no dead air: no 1.5 s stretch quieter than -48 dBFS (except the first second and the last 4 s, where the
     # closing song is meant to ring out on its own last notes - end_on_last_bar)
     blk = int(0.5 * 16000); lv = [20 * np.log10(np.sqrt(np.mean(a[k:k + blk] ** 2)) / 32768 + 1e-9) for k in range(0, len(a) - blk, blk)]

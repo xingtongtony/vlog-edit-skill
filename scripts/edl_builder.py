@@ -25,7 +25,7 @@
     b.photo('p084', 3.0, caption='TARSIER · LOBOC')
     b.save('edl/full.json')
 """
-import json, math, os, re, datetime
+import difflib, json, math, os, re, datetime
 
 # Narration pacing, measured 2026-10-19: the user reads at 4.0-4.6 syllables/s; a reference creator's narration runs
 # 4.7/s overall with 0.4-0.6 s between sentences. The old timing (chars/4.2 + 0.7 s per line, + 0.6 s between lines)
@@ -48,14 +48,19 @@ def _width(s): return sum(0.55 if c.isascii() else 1 for c in s if not c.isspace
 
 def _display(s): return re.sub(r'\s+', ' ', re.sub(r'[，,、；;：:——“”"]', ' ', s)).strip()
 
+NUMBERS = set('零一二三四五六七八九十百千万两半几0123456789') | set('点刻个只岁年月日号分秒米层天周次趟')
+
 def _halve(clause):
-    """Cut a clause wider than SUB_MAX into even pieces, never inside a Latin word or a number."""
-    n = math.ceil(_width(clause) / SUB_MAX); target = _width(clause) / n; out, cur = [], ''
-    for i, c in enumerate(clause):
-        if cur and len(out) < n - 1 and _width(cur) >= target and not (cur[-1].isascii() and cur[-1].isalnum() and c.isascii() and c.isalnum()):
-            out.append(cur); cur = ''
-        cur += c
-    return out + [cur]
+    """Cut a clause wider than SUB_MAX into even pieces, each break at the allowed place nearest its even share: never
+    inside a Latin word, a number with its unit (六点一刻, 三百岁 - Bali v7 showed 早上六 / 点一刻) or before 的 了 着."""
+    ok = lambda a, b: not (a.isascii() and a.isalnum() and b.isascii() and b.isalnum()) and not (a in NUMBERS and b in NUMBERS) \
+        and b not in '的了着地得们'
+    n = math.ceil(_width(clause) / SUB_MAX); cuts = []
+    for k in range(1, n):
+        target = _width(clause) * k / n
+        cands = [i for i in range(1, len(clause)) if ok(clause[i - 1], clause[i]) and (not cuts or i > cuts[-1])]
+        if cands: cuts.append(min(cands, key=lambda i: abs(_width(clause[:i]) - target)))
+    return [clause[a:b] for a, b in zip([0] + cuts, cuts + [len(clause)])]
 
 def split_paragraph(text):
     """A narration paragraph -> subtitle lines [(display text, pause after)]. Sentences end at 。！？…; a sentence
@@ -91,8 +96,8 @@ class Builder:
         self.photos = {p['id']: p for p in rd('photos.json', [])}
         self.times = {k: datetime.datetime.fromisoformat(v) for k, v in (times or {}).items()}
         self.e = {'project': project, 'size': [1920, 1080], 'fps': fps, 'look': look, 'shots': [], 'subtitles': [],
-                  'vo': [], 'cards': [], 'typewriter': [], 'fx': [], 'music': [], 'quiet': []}
-        self.allowed, self.pending_quiet, self.legacy = [], None, None
+                  'vo': [], 'cards': [], 'typewriter': [], 'fx': [], 'music': [], 'quiet': [], 'voices': []}
+        self.allowed, self.pending_quiet, self.legacy, self.recs = [], None, None, None
         self.pending_cards, self.used, self.teaser, self.teaser_clips, self.last_t, self.warnings = [], {}, False, set(), None, []
 
     # ---------------- bookkeeping ----------------
@@ -202,6 +207,28 @@ class Builder:
         watch and hear: the first look at a big place, the highlight itself, a place whose sound is the point, a beat
         after a heavy line, time passing. Talk and natural sound may run; narration on it is an error."""
         self.pending_quiet = {'why': why, 'dur': dur}
+
+    def use_narration(self, path):
+        """The user's recorded narration (narration_cut.py -> narration.json, one cleaned take per paragraph, in the
+        order the paragraphs appear). From here on vo() times every paragraph and its subtitle lines by the recording,
+        shows what was actually said, and puts the audio in the EDL's `voices`."""
+        self.recs = {int(k): v for k, v in json.load(open(path)).items()}
+
+    def _rec_lines(self, rec):
+        """Subtitle lines of a recorded paragraph and when they are spoken: [(display, start, end, next start)].
+        Character times come from narration_cut.py (Whisper's words on the cut audio, snapped to voice onsets); a
+        narration.json without them falls back to sharing each phrase's span evenly by its characters."""
+        clean = lambda s: re.sub(r'[\s，。！？；：、,.!?;:"“”‘’…—]', '', s)
+        chars = rec.get('chars') or []          # narration_cut.py: every character timed on the audio itself
+        if len(chars) != len(clean(rec['text'])):
+            chars = []
+            for text, a, b in rec['pieces']:
+                n = len(clean(text)) or 1; step = (b - a) / n
+                chars += [(a + i * step, a + (i + 1) * step) for i in range(n)]
+        out, i = [], 0
+        for text, _ in split_paragraph(rec['text']):
+            n = len(clean(text)); out.append([text, chars[i][0], chars[min(i + n, len(chars)) - 1][1]]); i += n
+        return [(t, a, b, out[k + 1][1] if k + 1 < len(out) else b + 0.3) for k, (t, a, b) in enumerate(out)]
 
     def legacy_rules(self, why):
         """For a cut made before the aerial rules (2026-10-25): its aerial problems are warnings, so it still builds."""
@@ -371,17 +398,29 @@ class Builder:
         A subtitle stays up through the pause after it, so the box does not flicker between lines of one paragraph.
         `back` / `motion_ok` apply to every B-roll item (e.g. to keep an order or a shot the user chose in Jianying).
         `quiet='why'` marks the `lead` seconds before the first word as a no-narration moment - the first look at a big
-        place gets lead=4-8 (storytelling.md -> 不配音的镜头). A dict item may carry `aerial=` like `shot()`."""
+        place gets lead=4-8 (storytelling.md -> 不配音的镜头). A dict item may carry `aerial=` like `shot()`, and
+        `on='words'`: it starts 0.25 s before the line that says them (the snowman on "戴上王冠的雪人", the cow on
+        "一头牛"); the items between two pinned ones share that stretch."""
         if quiet: self.pending_quiet = {'why': quiet, 'dur': lead}
         if isinstance(paras, str): paras = [paras]
-        lines = []                              # (display text, speech seconds, pause after, paragraph id, paragraph)
-        for p in paras:
-            pid = sum(1 for v in self.e['vo'] if 'para_text' in v) + len({l[3] for l in lines})
+        norm = lambda s: re.sub(r'[\s，。！？；：、,.!?;:"“”‘’…—]', '', s).lower()
+        lines, voices, t = [], [], 0.0        # lines: (display, start in the block, speech s, shown s, paragraph id, text)
+        base = sum(1 for v in self.e['vo'] if 'para_text' in v)
+        for n, p in enumerate(paras):
+            pid = base + n; rec = (self.recs or {}).get(pid + 1)
+            if rec:                             # the user's recording decides the timing and the words shown
+                if difflib.SequenceMatcher(None, norm(p), norm(rec['text']), autojunk=False).ratio() < 0.5:
+                    raise EditError(f"recording {pid + 1} does not match paragraph '{p[:20]}' (heard '{rec['text'][:20]}')")
+                for j, (text, a, b, nxt) in enumerate(self._rec_lines(rec)):
+                    lines.append((text, t + a, b - a, nxt - a, pid, rec['text'] if j == 0 else None))
+                voices.append((t, rec, pid)); t += rec['dur'] + gap
+                continue
             split = split_paragraph(p)
             for j, (text, pause) in enumerate(split):
-                last = j == len(split) - 1
-                lines.append((text, vo_duration(text), gap if last else pause, pid, p if j == 0 else None))
-        need = lead + sum(d + a for _, d, a, _, _ in lines) - lines[-1][2] + tail
+                last = j == len(split) - 1; sp = vo_duration(text)
+                lines.append((text, t, sp, sp + (0.3 if last else pause), pid, p if j == 0 else None))
+                t += sp + (gap if last else pause)
+        need = lead + t - gap + tail
         # Items: (clip, start[, audio[, seconds]]), ('photo', pid[, caption]) or a dict {clip|photo, at, audio, sec, w}.
         # `sec` fixes an item's length; the rest of the block is shared in proportion to `w` (default 1): the shot that
         # carries the paragraph (dolphins breaking the surface, the T-rex cliff) gets w=2-3, a passing cutaway w=0.6.
@@ -391,11 +430,36 @@ class Builder:
             if isinstance(it, dict): items.append(dict({'audio': 'ambient', 'w': 1.0}, **it)); continue
             if it[0] == 'photo': items.append({'photo': it[1], 'caption': it[2] if len(it) > 2 else None, 'w': 1.0}); continue
             items.append({'clip': it[0], 'at': it[1], 'audio': it[2] if len(it) > 2 else 'ambient', 'sec': it[3] if len(it) > 3 else None, 'w': 1.0})
-        fixed = sum(it['sec'] for it in items if it.get('sec')); wsum = sum(it['w'] for it in items if not it.get('sec'))
-        rest = max(0.0, need - fixed)
+        # `on`: shares by weight alone drift once the real recording replaces the estimate (Bali v7: 雪王 landed on the
+        # lunch shot, the cow a line after "一头牛"), so an item can be pinned to the words that name it
+        def anchor(words, after):
+            w = norm(words)
+            for text, st, speech, shown, pid, para in lines:
+                i = norm(text).find(w)
+                if i >= 0 and lead + st + speech * i / max(1, len(norm(text))) - 0.25 > after + 0.05:
+                    return lead + st + speech * i / max(1, len(norm(text))) - 0.25
+            raise EditError(f"on='{words}': no line says it after {after:.1f}s of the block")
+        bounds, groups = [0.0], [[]]
+        for k, it in enumerate(items):
+            if it.get('on') and k: bounds.append(anchor(it['on'], bounds[-1])); groups.append([])
+            groups[-1].append(it)
+        bounds.append(max(need, bounds[-1]))
+        for g, (a, b) in zip(groups, zip(bounds, bounds[1:])):
+            fixed = sum(it['sec'] for it in g if it.get('sec')); wsum = sum(it['w'] for it in g if not it.get('sec'))
+            rest = max(0.0, b - a - fixed)
+            for it in g:
+                if not it.get('sec'): it['len'] = max(1.6 if it['w'] < 1 else 2.2, rest * it['w'] / wsum) if wsum else 2.2
+                else: it['len'] = it['sec']
+            if g is not groups[-1] and abs(sum(it['len'] for it in g) - (b - a)) > 0.05:
+                raise EditError(f"items {[it.get('clip') or it.get('photo') for it in g]} take {sum(it['len'] for it in g):.1f}s "
+                                f"but the words pin them to {b - a:.1f}s - free a length or move the pin")
+        # the picture has to carry the whole narration: fixed lengths that fall short, or a fixed start too close to the
+        # end of its clip (shot() would quietly cut it), push the last lines onto whatever comes next (Bali v7)
+        if sum(it['len'] for it in items) < need - 0.05:
+            raise EditError(f"narration needs {need:.1f}s but the B-roll is fixed at {sum(it['len'] for it in items):.1f}s - free an item or add one")
         for it in items:
-            if not it.get('sec'): it['len'] = max(1.6 if it['w'] < 1 else 2.2, rest * it['w'] / wsum) if wsum else 2.2
-            else: it['len'] = it['sec']
+            if 'clip' in it and isinstance(it.get('at'), (int, float)) and it['at'] + it['len'] > self.clips[it['clip']]['duration'] + 0.05:   # shot() trims the last 0.05 s
+                raise EditError(f"{it['clip']} from {it['at']}s cannot give {it['len']:.1f}s (clip is {self.clips[it['clip']]['duration']:.1f}s) - start earlier, fix its length or add an item")
         first = None
         for k, it in enumerate(items):
             extra = (dict(first_kw, **({'xfade': xfade} if xfade else {}))) if first is None else {}
@@ -406,21 +470,25 @@ class Builder:
             else:
                 clip, a, d = it['clip'], it.get('at'), it['len']
                 if a == 'next': a = self.e['shots'][-1]['out']          # continue the take of the previous item
-                elif a is None: a = self.steady(clip, d)
+                elif a is None: a = self.steady(clip, d, it.get('lo', 0.0), it.get('hi'))   # lo / hi: where in the clip to look
                 if it.get('aerial'): extra = dict(extra, aerial=it['aerial'])
                 if it.get('bed'): extra = dict(extra, bed=it['bed'])            # natural sound under a silent shot
                 i = self.shot(clip, a, a + d, audio=it['audio'], note=it.get('note', 'VO B-roll'), back=back,
                               motion_ok=it.get('motion_ok', motion_ok), **extra)
             first = i if first is None else first
-        t = lead; durs = [self.dur(k) for k in range(first, self.n)]
-        for text, speech, pause, pid, para in lines:
+        durs = [self.dur(k) for k in range(first, self.n)]
+        def where(t):                                   # block time -> (shot, seconds into it)
             acc, k = 0.0, 0
-            while k < len(durs) - 1 and acc + durs[k] <= t: acc += durs[k]; k += 1
-            shown = speech + (pause if pause < gap else 0.3)
-            v = {'shot': first + k, 'at': round(t - acc, 2), 'text': text, 'dur': round(shown, 2), 'speech': speech, 'para': pid}
+            while k < len(durs) - 1 and acc + durs[k] <= t + 1e-6: acc += durs[k]; k += 1
+            return first + k, max(0.0, t - acc)
+        for text, st, speech, shown, pid, para in lines:
+            k, at = where(lead + st)
+            v = {'shot': k, 'at': round(at, 2), 'text': text, 'dur': round(shown, 2), 'speech': round(speech, 2), 'para': pid}
             if para: v['para_text'] = para
             self.e['vo'].append(v)
-            t += speech + pause
+        for st, rec, pid in voices:
+            k, at = where(lead + st)
+            self.e['voices'].append({'shot': k, 'at': round(at, 3), 'path': rec['wav'], 'dur': rec['dur'], 'para': pid})
         return first
 
     # ---------------- graphics / music ----------------
