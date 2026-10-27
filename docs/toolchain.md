@@ -12,6 +12,7 @@
 | Pillow | 系统 python3.9 用户目录 | 渲染字幕图片 |
 | Demucs + librosa | 虚拟环境 `~/.venvs/tts` | 把成片拆成人声/音乐两轨（`python -m demucs --two-stems=vocals -d mps`，13 分钟约 30 秒）；分析节拍、换歌点。脚本 `scripts/analysis/music_analysis.py` |
 | wav2vec2 中文 CTC 模型 + pypinyin | 模型在 `~/.cache/vlog-models/wav2vec2-zh`（`jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn`，Apache-2.0，1.3 GB），跑在 `~/.venvs/tts`（torch + transformers） | 旁白录音逐字对齐、找卡顿和重复（`narration_align.py`）。下载：huggingface.co 走代理只有 150 KB/s、hf_xet 会卡在 0 字节；用 `hf-mirror.com` 直连（`env -u HTTPS_PROXY curl --noproxy '*'`），8 路 `-r` 分段并行约 5 MB/s，下完核对 `x-linked-etag`（SHA-256） |
+| pymatting | `~/.venvs/tts`（`pip install pymatting`，MIT） | 封面抠图的发丝级边缘：`refine_matte.py` 用 Vision 的轮廓做三分图，closed-form matting 算半透明，`estimate_foreground_ml` 去掉发丝里原背景的颜色 |
 | Qwen3-TTS | 虚拟环境 `~/.venvs/tts`（Python 3.12 + mlx-audio） | 中文 AI 配音，只用来试听，成片不用 AI 配音；模型 `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16` |
 
 ## 注意事项

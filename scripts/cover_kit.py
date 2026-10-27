@@ -14,11 +14,11 @@ Frames come from the original footage (no burned subtitles, full resolution) at 
 with the cut's per-clip filter; the cut-out comes from scripts/subject_mask.swift (built into macOS, no model download).
 """
 import json, os, subprocess
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFont
 import grade
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__))); FONTS = os.path.join(ROOT, 'fonts')
-FF = '/opt/homebrew/bin/ffmpeg'; W, H = 1080, 1440; SH = H // 3; M = 64            # canvas, strip height, margin
+FF, VENV = '/opt/homebrew/bin/ffmpeg', os.path.expanduser('~/.venvs/tts/bin/python'); W, H = 1080, 1440; SH = H // 3; M = 64            # canvas, strip height, margin
 WHITE, YELLOW, SUN = (255, 255, 255), (255, 210, 63), (255, 226, 140)
 NAVY, CORAL = (18, 53, 84), (226, 85, 58)
 
@@ -62,8 +62,17 @@ class Kit:
             fr.crop(box).save(part); vision(part, part_mask)
             m = Image.new('L', fr.size, 0); m.paste(Image.open(part_mask).convert('L'), box[:2]); m.save(dst)
             os.remove(part); os.remove(part_mask)
-        m = Image.open(dst).convert('L').point(lambda v: 255 if v > 128 else 0)  # hard edge, then a hair of feather
-        return m.filter(ImageFilter.GaussianBlur(1.2))
+        return Image.open(dst).convert('L').point(lambda v: 255 if v > 128 else 0)
+
+    def cutout(self, clip, t, mode='subject'):
+        """(foreground colours, alpha) of the subject, strand by strand: Vision's mask refined by scripts/refine_matte.py.
+        Paste the foreground through the alpha - not the frame through Vision's mask, which keeps the old sky in the hair."""
+        src = os.path.join(self.out, 'frames', f'{clip}_{t}.png'); self.subject(clip, t, mode)
+        alpha, fg = src[:-4] + f'_alpha_{mode}.png', src[:-4] + f'_fg_{mode}.png'
+        if not os.path.exists(alpha):
+            subprocess.run([VENV, os.path.join(ROOT, 'scripts', 'refine_matte.py'), src, src[:-4] + f'_mask_{mode}.png',
+                            alpha, fg], check=True, capture_output=True)
+        return Image.open(fg).convert('RGB'), Image.open(alpha).convert('L')
 
 def window(im, size, cx=0.5, cy=0.5, zoom=1.0):
     """Crop box of the target aspect centred on (cx, cy) (fractions of the frame); zoom > 1 is tighter."""
@@ -134,7 +143,7 @@ def full_bleed_hero(kit, out, shot, word, color, hero_top=470, cx=0.5, cy=0.5, l
     clip, t = shot; box = window(kit.frame(clip, t), (W, H), cx=cx, cy=cy)
     pic = kit.frame(clip, t).crop(box).resize((W, H), Image.LANCZOS); img = pic.copy()
     hero(img, word, hero_font, (M - 8, hero_top, W - M + 8, 0), color)
-    if cut: img.paste(pic, (0, 0), kit.subject(clip, t, cut).crop(box).resize((W, H), Image.LANCZOS))
+    if cut: fg, a = kit.cutout(clip, t, cut); img.paste(fg.crop(box).resize((W, H), Image.LANCZOS), (0, 0), a.crop(box).resize((W, H), Image.LANCZOS))
     small = font('InstrumentSans[wdth,wght].ttf', 24, wght=600)
     if labels[0]: text(img, (M, 70), labels[0], small, fill=label_color, track=7)
     if labels[1]: text(img, (W - M, 70), labels[1], small, fill=label_color, track=7, anchor='r')
@@ -154,7 +163,9 @@ def triptych_hero(kit, out, strips, word, color, hero_strip=1, inset=70, tag='',
         pic = kit.frame(clip, t).crop(box).resize((W, SH), Image.LANCZOS); img.paste(pic, (0, k * SH))
         if k != hero_strip: continue
         hero(img, word, hero_font, (24, k * SH + inset, W - 24, 0), color, max_h=SH - inset - 20)
-        if cut: img.paste(pic, (0, k * SH), kit.subject(clip, t, cut).crop(box).resize((W, SH), Image.LANCZOS))
+        if cut:
+            fg, a = kit.cutout(clip, t, cut)
+            img.paste(fg.crop(box).resize((W, SH), Image.LANCZOS), (0, k * SH), a.crop(box).resize((W, SH), Image.LANCZOS))
     if tag: text(img, (M, hero_strip * SH + 24), tag, font('InstrumentSans[wdth,wght].ttf', 22, wght=600), track=6)
     if series: series_label(img, series)
     img.save(kit.path(out), quality=95)
@@ -188,8 +199,8 @@ def triptych_breakout(kit, out, strips, word, place='', hook='', word_h=250, pla
     text(img, (M - l, SH - 30 - b), word, f)
     clip, t = strips[1][:2]; x0, y0, x1, y1 = boxes[1]; s = W / (x1 - x0)
     ext = (x0, round(y0 - min(y0, SH / s)), x1, y1); size = (W, round((y1 - ext[1]) * s))
-    pic = kit.frame(clip, t).crop(ext).resize(size, Image.LANCZOS)
-    img.paste(pic, (0, 2 * SH - size[1]), kit.subject(clip, t, cut).crop(ext).resize(size, Image.LANCZOS))
+    fg, a = kit.cutout(clip, t, cut)
+    img.paste(fg.crop(ext).resize(size, Image.LANCZOS), (0, 2 * SH - size[1]), a.crop(ext).resize(size, Image.LANCZOS))
     if place: text(img, (W - M, 52), place, font('SmileySans-Oblique.ttf', 112), fill=place_color, anchor='r')
     if hook: text(img, (M, SH + hook_y), hook, font('LXGWMarkerGothic-Regular.ttf', 88), fill=hook_color)
     if tag: text(img, (M, 40), tag, font('InstrumentSans[wdth,wght].ttf', 22, wght=600), track=6)
