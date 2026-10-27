@@ -128,15 +128,8 @@ def card_png(card, W, H, path):
             if card.get('sub'):
                 cap = ft('Outfit[wght].ttf', 20, 400); spaced(d, x + 2 * s, y + 200 * s, card['sub'], cap, fill, 7 * s)
         im = shadowed(fn, 9 * s)
-    elif kind == 'pop':    # 花字: one short reaction line after a punchline, slightly tilted, placed next to the subject
-        f = ft('SmileySans-Oblique.ttf', card.get('size', 64)); x, y = W * card.get('x', 0.62), H * card.get('y', 0.18)
-        lay = Image.new('RGBA', (W, H)); d = ImageDraw.Draw(lay); tw = d.textlength(text, font=f)
-        pad = 18 * s; box = (x - pad, y - pad * 0.6, x + tw + pad, y + card.get('size', 64) * s * 1.05 + pad * 0.6)
-        d.rounded_rectangle(box, radius=10 * s, fill=tuple(card.get('bg', (255, 214, 64))) + (235,))
-        d.text((x, y), text, font=f, fill=tuple(card.get('fg', (24, 24, 24))) + (255,))
-        lay = lay.rotate(card.get('tilt', -3), resample=Image.BICUBIC, center=((box[0] + box[2]) / 2, (box[1] + box[3]) / 2))
-        sh = Image.new('RGBA', (W, H)); sh.paste((0, 0, 0, 90), (0, 0), lay.split()[3].filter(ImageFilter.GaussianBlur(8 * s)))
-        im = Image.alpha_composite(sh, lay)
+    elif kind == 'pop':      # the yellow 花字 label: removed at the user's request (Bali v8), the builder rejects it
+        raise ValueError(f"card '{text}': yellow 花字 labels are not used")
     elif kind == 'label':  # small place/time stamp, bottom-left
         f = ImageFont.truetype(FONT, round(28 * s))
         def fn(d, fill): spaced(d, 64 * s, H - 118 * s, text, f, fill, 3 * s)
@@ -271,20 +264,123 @@ def _bg_frame(clips, clip, t, W, H):
                          capture_output=True).stdout
     return Image.frombytes('RGB', (W, H), raw)
 
-def render_still(sh, W, H, fps, a0, dur, out, tmp, clips=None):
+# ---------------- hand-drawn marks (the tutorial's 方法四 涂鸦, on screenshots) ----------------
+PEN = (234, 62, 46)            # red pen: reads on a white screenshot and on the dark blurred backdrop around it
+HAND = {'zh': os.path.join(ROOT, 'fonts', 'Xiaolai-Regular.ttf'), 'en': os.path.join(ROOT, 'fonts', 'Caveat[wght].ttf')}
+MARK_DUR = {'circle': 0.5, 'underline': 0.4, 'arrow': 0.35, 'cloud': 0.7, 'text': 0.45}
+
+def _wobble(n, amp, seed):
+    """Smooth hand tremor: n offsets from two slow sines with random phases."""
+    rng = np.random.default_rng(seed); u = np.linspace(0, 1, n)
+    return amp * (0.6 * np.sin(2 * np.pi * (rng.uniform(0.6, 1.4) * u + rng.uniform(0, 1)))
+                  + 0.4 * np.sin(2 * np.pi * (rng.uniform(2.0, 3.5) * u + rng.uniform(0, 1))))
+
+def mark_strokes(m, X, Y, S, seed):
+    """A mark as pen strokes (lists of points, drawn in this order). X / Y turn the mark's coordinates (fractions of
+    the card: < 0 or > 1 is the backdrop around it) into pixels; S is the frame height, sizes scale with it.
+    circle: `box` [x0, y0, x1, y1], one loop and a bit, the second pass drifting out like a pen going round a word;
+    underline: under `box`; arrow: `from` -> `to`, bent by `bend`; cloud: a rain cloud at `xy`, `size` (of S) wide."""
+    k = m['kind']
+    if k == 'circle':
+        x0, y0, x1, y1 = m['box']; cx, cy = X((x0 + x1) / 2), Y((y0 + y1) / 2); rx, ry = (X(x1) - X(x0)) / 2, (Y(y1) - Y(y0)) / 2
+        n = 120; a = np.pi * 1.15 + np.linspace(0, 2 * np.pi * 1.12, n)
+        r = 1 + _wobble(n, 0.05, seed) + np.linspace(0, 0.09, n)
+        return [list(zip(cx + rx * r * np.cos(a), cy + ry * r * np.sin(a)))]
+    if k == 'underline':
+        x0, _, x1, y = m['box']; n = 48
+        return [list(zip(np.linspace(X(x0), X(x1), n), Y(y) + _wobble(n, S * 0.003, seed) - np.linspace(0, S * 0.005, n)))]
+    if k == 'arrow':
+        P0, P2 = np.array([X(m['from'][0]), Y(m['from'][1])]), np.array([X(m['to'][0]), Y(m['to'][1])]); d = P2 - P0
+        P1 = (P0 + P2) / 2 + np.array([-d[1], d[0]]) * m.get('bend', 0.25)
+        u = np.linspace(0, 1, 40)[:, None]; pts = (1 - u) ** 2 * P0 + 2 * (1 - u) * u * P1 + u ** 2 * P2
+        v = pts[-1] - pts[-5]; v = v / (np.linalg.norm(v) + 1e-6) * S * 0.022
+        rot = lambda a: np.array([v[0] * np.cos(a) - v[1] * np.sin(a), v[0] * np.sin(a) + v[1] * np.cos(a)])
+        tip = pts[-1]
+        return [[tuple(p) for p in pts], [tuple(tip - rot(0.55)), tuple(tip), tuple(tip - rot(-0.55))]]
+    if k == 'cloud':          # scalloped top, flat bottom; rain dashes under it
+        cx, cy = X(m['xy'][0]), Y(m['xy'][1]); w = S * m.get('size', 0.14); n = 140
+        a = np.linspace(np.pi * 0.95, np.pi * 0.95 + 2 * np.pi, n); up = np.sin(a) < 0
+        r = 1 + np.where(up, 0.2 * np.abs(np.sin(2.5 * (a - np.pi))), 0) + _wobble(n, 0.03, seed)
+        xs, ys = cx + w / 2 * r * np.cos(a), cy + w * 0.36 * r * np.sin(a) * np.where(up, 1, 0.4)
+        strokes = [list(zip(xs, ys))]
+        for j in range(4):
+            x = cx - w * 0.3 + j * w * 0.2; y = cy + w * 0.26 + (j % 2) * w * 0.08
+            strokes.append([(x, y), (x - w * 0.05, y + w * 0.16)])
+        return strokes
+    raise ValueError(f'mark kind {k}')
+
+def draw_marks(fr, marks, t, X, Y, S, pen=PEN):
+    """Draw every mark that has started by time t (seconds into the shot) onto fr, written on stroke by stroke over
+    its `dur` (MARK_DUR by kind) - pinned to the words in the builder (`on=`), so the pen moves as the line says them."""
+    d = ImageDraw.Draw(fr); w = max(2, round(S * 0.0055))
+    for j, m in enumerate(marks):
+        u = (t - m['at']) / m.get('dur', MARK_DUR[m['kind']])
+        if u <= 0: continue
+        u = ease(u); col = tuple(m.get('color', pen))
+        if m['kind'] == 'text':        # handwriting revealed left to right, slightly turned
+            f = ImageFont.truetype(HAND[m.get('font', 'zh')], round(S * m.get('size', 0.07)))
+            if m.get('font') == 'en': f.set_variation_by_axes([600])
+            bb = f.getbbox(m['text']); im = Image.new('RGBA', (bb[2] + 8, bb[3] + 8), (0, 0, 0, 0))
+            ImageDraw.Draw(im).text((4, 4), m['text'], font=f, fill=col + (255,))
+            cut = round(im.width * u); im.paste((0, 0, 0, 0), (cut, 0, im.width, im.height))
+            im = im.rotate(m.get('rot', -4), resample=Image.BICUBIC, expand=True)
+            fr.paste(im, (round(X(m['xy'][0])), round(Y(m['xy'][1]))), im)
+            continue
+        strokes = mark_strokes(m, X, Y, S, seed=j + 11)
+        lens = [sum(np.hypot(q[0] - p[0], q[1] - p[1]) for p, q in zip(s, s[1:])) for s in strokes]
+        left = u * sum(lens); scol = [col] + [tuple(m.get('rain', col))] * (len(strokes) - 1)
+        for s, L, c in zip(strokes, lens, scol):
+            if left <= 0: break
+            pts, acc = [s[0]], 0.0
+            for p, q in zip(s, s[1:]):
+                seg = np.hypot(q[0] - p[0], q[1] - p[1])
+                if acc + seg >= left:
+                    f_ = (left - acc) / max(seg, 1e-6); pts.append((p[0] + (q[0] - p[0]) * f_, p[1] + (q[1] - p[1]) * f_)); break
+                pts.append(q); acc += seg
+            left -= L
+            d.line(pts, fill=c, width=w, joint='curve')
+            for p in (pts[0], pts[-1]): d.ellipse((p[0] - w / 2, p[1] - w / 2, p[0] + w / 2, p[1] + w / 2), fill=c)
+
+def render_still(sh, W, H, fps, a0, dur, out, tmp, clips=None, beats=None):
     """A photo or a news card as a short video, drawn frame by frame in PIL (smooth push-in, no pixel jitter).
     Plain photo: the whole photo on black, push-in 4.5 % over the shot. News (`sh['news']`): the screenshot as a card
     with rounded corners and a soft shadow over a blurred, darkened frame of our own footage (`bg: [clip, t]`); the card
     rises in, the whole frame drifts in 3.5 %, and a marker highlight sweeps across `hl` (fractions of the screenshot) -
-    a cut-out from the paper, not a screenshot dropped on black."""
+    a cut-out from the paper, not a screenshot dropped on black. `crop` (fractions) trims the screenshot first; `marks`
+    are drawn on it by hand (draw_marks) at their times.
+    Mask (`sh['mask']`, the tutorial's 方法三 蒙版动画): the photo seen through a window on black; on the music's beats
+    (`beats`, seconds into the shot) the window jumps to another size, place and detail, and the last key shows the
+    whole photo - a portrait photo is not 5 s of a still between two black bars."""
     full = max(0.5, sh['out'] - sh['in']); n = round(dur * fps); f0 = round(a0 * fps); K = max(1, round(full * fps))
     W2, H2 = W * 2, H * 2
-    news = sh.get('news')
-    if news:
+    news, win = sh.get('news'), sh.get('mask')
+    if win:
+        # a key: window `box` (fractions of the frame), the photo point shown at its centre (`focus`, fractions of the
+        # photo) and the photo's width as a share of the frame width (`scale`); `fit` = the whole photo fitted
+        from PIL import ImageOps
+        im = ImageOps.exif_transpose(Image.open(sh['photo'])).convert('RGB')
+        fit = min(W2 / im.width, H2 / im.height)
+        def key(k):
+            if k.get('fit'):
+                fw, fh = im.width * fit / W2, im.height * fit / H2
+                return np.array([(1 - fw) / 2, (1 - fh) / 2, (1 + fw) / 2, (1 + fh) / 2, 0.5, 0.5, fw])
+            return np.array(list(k['box']) + list(k.get('focus', (0.5, 0.5))) + [k.get('scale', 1.0)])
+        bt = lambda b: 0.0 if not b else (beats[b - 1] if beats and b - 1 < len(beats) else b * 0.6)
+        keys = [(bt(k.get('beat', 0)), key(k)) for k in win]
+        s = min(1.0, W2 * max(k[6] for _, k in keys) / im.width)       # never decode more pixels than the largest key shows
+        im = im.resize((round(im.width * s), round(im.height * s)), Image.LANCZOS)
+        def window(t):
+            cur = keys[0][1]
+            for tk, kv in keys[1:]:
+                if t >= tk: cur = cur + (kv - cur) * ease((t - tk) / 0.2)     # a quick 0.2 s move on the beat
+            return cur
+    elif news:
         from PIL import ImageOps
         bg = _bg_frame(clips, news['bg'][0], news['bg'][1], W2, H2).filter(ImageFilter.GaussianBlur(H2 / 40))
         bg = Image.blend(bg, Image.new('RGB', (W2, H2), (8, 10, 14)), 0.45)
         card = ImageOps.exif_transpose(Image.open(sh['photo'])).convert('RGB')
+        if news.get('crop'):
+            x0, y0, x1, y1 = news['crop']; card = card.crop((round(x0 * card.width), round(y0 * card.height), round(x1 * card.width), round(y1 * card.height)))
         sc = min(W2 * news.get('w', 0.62) / card.width, H2 * news.get('h', 0.74) / card.height)
         card = card.resize((round(card.width * sc), round(card.height * sc)), Image.LANCZOS)
         r = round(H2 * 0.012); mask = Image.new('L', card.size, 0); ImageDraw.Draw(mask).rounded_rectangle((0, 0, card.width - 1, card.height - 1), r, fill=255)
@@ -300,7 +396,15 @@ def render_still(sh, W, H, fps, a0, dur, out, tmp, clips=None):
                           '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '12', '-pix_fmt', 'yuv420p', out], stdin=subprocess.PIPE)
     for j in range(n):
         k = f0 + j; u = k / K
-        if news:
+        if win:
+            x0, y0, x1, y1, fx, fy, sw = window(k / fps); fr = Image.new('RGB', (W2, H2))
+            bx0, by0, bx1, by1 = x0 * W2, y0 * H2, x1 * W2, y1 * H2; kk = sw * W2 / im.width     # frame px per photo px
+            sx0 = fx * im.width + (bx0 - (bx0 + bx1) / 2) / kk; sy0 = fy * im.height + (by0 - (by0 + by1) / 2) / kk
+            sx0 = min(max(0.0, sx0), im.width - (bx1 - bx0) / kk); sy0 = min(max(0.0, sy0), im.height - (by1 - by0) / kk)   # stay on the photo
+            ww, wh = max(1, round(bx1 - bx0)), max(1, round(by1 - by0))
+            fr.paste(im.resize((ww, wh), Image.BICUBIC, box=(sx0, sy0, sx0 + (bx1 - bx0) / kk, sy0 + (by1 - by0) / kk)), (round(bx0), round(by0)))
+            z = 1 + 0.03 * u
+        elif news:
             t = k / fps; fr = bg.copy()
             a = ease(t / 0.5); lift = round((1 - a) * H2 * 0.035)
             fr.paste(Image.new('RGB', shadow.size, (0, 0, 0)), (cx - 80, cy - 80 + lift), shadow.point(lambda v: int(v * a)))
@@ -312,12 +416,72 @@ def render_still(sh, W, H, fps, a0, dur, out, tmp, clips=None):
                     m = Image.new('RGBA', c.size, (0, 0, 0, 0)); ImageDraw.Draw(m).rectangle(box, fill=(255, 205, 40, 105))
                     c = Image.alpha_composite(c.convert('RGBA'), m).convert('RGB')
             fr.paste(c, (cx, cy + lift), mask.point(lambda v: int(v * a)))
+            if news.get('marks'):
+                draw_marks(fr, news['marks'], t, lambda fx: cx + fx * card.width, lambda fy: cy + lift + fy * card.height, H2, tuple(news.get('pen', PEN)))
             z = 1 + 0.035 * u
         else:
             fr = base; z = 1 + 0.045 * u
         w, h = W2 / z, H2 / z; x0, y0 = (W2 - w) / 2, (H2 - h) / 2
         frame = fr.resize((W, H), Image.BICUBIC, box=(x0, y0, x0 + w, y0 + h))      # both are drawn at 2x
         p.stdin.write(frame.tobytes())
+    p.stdin.close(); p.wait()
+
+def torn_note(text, S, font='zh', size=0.06, seed=0):
+    """A handwritten line on a strip of torn paper (RGBA, with its shadow): the tutorial's 撕纸素材上面写字."""
+    f = ImageFont.truetype(HAND[font], round(S * size))
+    if font == 'en': f.set_variation_by_axes([600])
+    bb = f.getbbox(text); pw, ph = bb[2] - bb[0] + round(S * size * 1.1), bb[3] - bb[1] + round(S * size * 0.9)
+    pad = round(S * 0.03); im = Image.new('RGBA', (pw + 2 * pad, ph + 2 * pad), (0, 0, 0, 0))
+    rng = np.random.default_rng(seed); n = 24
+    top = [(pad + pw * i / n, pad + rng.uniform(-1, 1) * S * 0.004) for i in range(n + 1)]
+    bot = [(pad + pw * i / n, pad + ph + rng.uniform(-1, 1) * S * 0.004) for i in range(n, -1, -1)]
+    left = [(pad + rng.uniform(-1, 1) * S * 0.005, pad + ph * i / 6) for i in range(5, 0, -1)]   # torn edges: ragged
+    right = [(pad + pw + rng.uniform(-1, 1) * S * 0.005, pad + ph * i / 6) for i in range(1, 6)]
+    poly = top + right + bot + left
+    sh = Image.new('L', im.size, 0); ImageDraw.Draw(sh).polygon([(x + S * 0.004, y + S * 0.006) for x, y in poly], fill=110)
+    im.putalpha(sh.filter(ImageFilter.GaussianBlur(S * 0.006)))
+    paper = Image.new('L', im.size, 0); ImageDraw.Draw(paper).polygon(poly, fill=255)
+    im.paste(Image.new('RGBA', im.size, (244, 238, 224, 255)), (0, 0), paper)
+    ImageDraw.Draw(im).text((pad + round(S * size * 0.55) - bb[0], pad + round(S * size * 0.45) - bb[1]), text, font=f, fill=(48, 44, 40, 255))
+    return im
+
+def render_layers(sh, W, H, fps, n, out):
+    """Photos (and a note on torn paper) laid over a video shot one after another - the tutorial's 方法二 画中画文艺风:
+    the moving picture stays underneath, each photo is a cropped detail at its own size, the words come last.
+    `layers`: [{photo, crop: [x0, y0, x1, y1] of the photo, xy: centre (fractions of the frame), h: height (of the
+    frame), tilt: degrees, at: seconds into the shot} | {note: text, font: zh|en, size, xy, tilt, at}]; `dim` darkens the
+    video under them. A photo lands with a short pop (0.3 s) and the shutter sound; nothing moves after that but the
+    video. Written as an alpha movie that render_shot lays over the shot. `blur` (sigma at 1080p) takes the video out of
+    focus: people walking behind the prints read as cut-off legs under them (Bali v8, the run club)."""
+    from PIL import ImageOps
+    S = H; items = []
+    for j, L in enumerate(sh['layers']):
+        if L.get('note'):
+            im = torn_note(L['note'], S, L.get('font', 'zh'), L.get('size', 0.06), seed=j)
+        else:
+            ph = ImageOps.exif_transpose(Image.open(L['photo'])).convert('RGB')
+            if L.get('crop'):
+                x0, y0, x1, y1 = L['crop']; ph = ph.crop((round(x0 * ph.width), round(y0 * ph.height), round(x1 * ph.width), round(y1 * ph.height)))
+            h = round(S * L.get('h', 0.5)); ph = ph.resize((round(ph.width * h / ph.height), h), Image.LANCZOS)
+            pad = round(S * 0.04); im = Image.new('RGBA', (ph.width + 2 * pad, ph.height + 2 * pad), (0, 0, 0, 0))
+            shadow = Image.new('L', im.size, 0); ImageDraw.Draw(shadow).rectangle((pad + 6, pad + 10, pad + ph.width + 6, pad + ph.height + 10), fill=120)
+            im.putalpha(shadow.filter(ImageFilter.GaussianBlur(S * 0.012))); im.paste(ph, (pad, pad))
+        if L.get('tilt'): im = im.rotate(L['tilt'], resample=Image.BICUBIC, expand=True)
+        items.append((L['at'], im, L['xy']))
+    a0 = min(at for at, _, _ in items); dim = sh.get('dim', 0.0)
+    p = subprocess.Popen([FF, '-v', 'error', '-y', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', f'{W}x{H}', '-r', str(fps), '-i', '-',
+                          '-c:v', 'qtrle', '-pix_fmt', 'argb', out], stdin=subprocess.PIPE)
+    for k in range(n):
+        t = k / fps; fr = Image.new('RGBA', (W, H), (0, 0, 0, round(255 * dim * ease((t - a0) / 0.4)) if t > a0 else 0))
+        for at, im, (cx, cy) in items:
+            if t < at: continue
+            u = ease((t - at) / 0.3); z = 1.06 - 0.06 * u
+            lay = im if z == 1.0 else im.resize((round(im.width * z), round(im.height * z)), Image.BICUBIC)
+            if u < 1: lay = lay.copy(); lay.putalpha(lay.getchannel('A').point(lambda v: int(v * min(1.0, u * 1.6))))
+            x, y = round(cx * W - lay.width / 2), round(cy * H - lay.height / 2)
+            if x < 0 or y < 0: lay = lay.crop((max(0, -x), max(0, -y), lay.width, lay.height)); x, y = max(0, x), max(0, y)
+            fr.alpha_composite(lay.crop((0, 0, min(lay.width, W - x), min(lay.height, H - y))), (x, y))
+        p.stdin.write(fr.tobytes())
     p.stdin.close(); p.wait()
 
 def _map_proj(box, W, H, margin=0.06):
@@ -428,6 +592,27 @@ class _Keep:
 
 def vo_duration(text): return round(len(text) / 4.3 + 0.6, 2)
 
+VENV = os.path.expanduser('~/.venvs/tts/bin/python')
+
+def track_beats(path, cache):
+    """Beat times of a song (librosa, which lives in the tts venv), cached in `cache` (json, keyed by path)."""
+    db = json.load(open(cache)) if os.path.exists(cache) else {}
+    if path not in db:
+        code = ('import sys, json, librosa; y, sr = librosa.load(sys.argv[1], sr=22050, mono=True); '
+                '_, b = librosa.beat.beat_track(y=y, sr=sr, units="time"); print(json.dumps([round(float(x), 3) for x in b]))')
+        db[path] = json.loads(subprocess.run([VENV, '-c', code, path], check=True, capture_output=True, text=True).stdout)
+        json.dump(db, open(cache, 'w'))
+    return db[path]
+
+def shot_beats(edl, tl, i, cache):
+    """Beats of the song under shot i, in seconds from the shot's start (a photo's mask moves on them)."""
+    for m in edl.get('music') or []:
+        f, t = m.get('from_shot', 0), m.get('to_shot') if m.get('to_shot') is not None else len(tl) - 1
+        if f <= i < t:
+            a = tl[f] + m.get('at_offset', 0) - m.get('start', 0)
+            return [round(b + a - tl[i], 3) for b in track_beats(m['path'], cache) if tl[i] < b + a < tl[i + 1]]
+    return []
+
 def music_track(m, tl, total, N):
     """Envelope for one song between from_shot and to_shot. It comes in over `fade_in` (0.8 s) and is OUT by the
     boundary: the fade (`fade_out`, 1.5 s) ends at to_shot, so songs never run into each other and the cut into the
@@ -467,7 +652,7 @@ def overlays_for(edl, tl, shots, fps, W, H, tmp):
         if cd.get('kind') == 'place':
             p1, p2 = place_pngs(cd, W, H, tmp, k); ovs.append((p1, a, b, 0.4, 0.4)); ovs.append((p2, a + 0.35, b, 0.4, 0.4))
             continue
-        p = f'{tmp}/card{k}.png'; card_png(cd, W, H, p); add(p, a, b, {'label': 0.25, 'pop': 0.12}.get(cd.get('kind'), 0.35))
+        p = f'{tmp}/card{k}.png'; card_png(cd, W, H, p); add(p, a, b, {'label': 0.25}.get(cd.get('kind'), 0.35))
     for k, cd in enumerate(edl.get('typewriter', [])):
         a = tl[cd['shot']] + cd.get('at', 0); step = cd.get('step', 0.07); txt = cd['text']
         for j in range(1, len(txt) + 1):
@@ -527,6 +712,9 @@ def main():
         for s in edl['shots']:                      # photos too: Bali v7 stopped on a photo while the drive was out
             local = os.path.join(src_dir, os.path.basename(s.get('photo') or ''))
             if s.get('photo') and os.path.exists(local): s['photo'] = local
+            for L in s.get('layers', []):
+                local = os.path.join(src_dir, os.path.basename(L.get('photo') or ''))
+                if L.get('photo') and os.path.exists(local): L['photo'] = local
     shots = edl['shots']
     starts, t = [], 0
     for s in shots: starts.append(t); t += round((s['out'] - s['in']) * fps)
@@ -568,9 +756,11 @@ def main():
 
         import hashlib
         png_md5 = {}; code_fp = hashlib.sha1(picture_code().encode()).hexdigest()
+        beats = {i: shot_beats(edl, tl + [total], i, os.path.join(edl['project'], 'ingest', 'beats.json'))
+                 for i, s in enumerate(shots) if s.get('mask')}
         def shot_key(i):
             s = shots[i]; t0, t1 = tl[i], ends[i]; h = hashlib.sha1(code_fp.encode())   # not the whole-EDL fingerprint: an edit elsewhere must not re-render this shot
-            h.update(json.dumps([s, shots[i - 1] if i and s.get('xfade') else None, clip_grade.get(s['clip']),
+            h.update(json.dumps([s, beats.get(i), shots[i - 1] if i and s.get('xfade') else None, clip_grade.get(s['clip']),
                                  clip_grade.get(shots[i - 1]['clip']) if i and s.get('xfade') else None,
                                  round((s['out'] - s['in']) * fps), i == 0, i == len(shots) - 1], sort_keys=True, default=str).encode())
             for p, a, b, fi, fo in ovs:
@@ -596,7 +786,7 @@ def main():
                     # frames drawn in PIL with sub-pixel crop boxes: ffmpeg zoompan rounds the crop to whole pixels
                     # every frame and the photo visibly shivers (Bali v1: "所有的照片还有新闻的截图，画面都是颤抖的")
                     mv = f"{tmp}/still_{sh['clip']}_{round(a0 * fps)}_{round(dur * fps)}.mp4"
-                    if not os.path.exists(mv): render_still(sh, W, H, fps, a0, dur + 0.2, mv, tmp, clips)
+                    if not os.path.exists(mv): render_still(sh, W, H, fps, a0, dur + 0.2, mv, tmp, clips, beats.get(shots.index(sh)))
                     return ['-i', mv], 'setsar=1'
                 cc = clips[sh['clip']]
                 gf = clip_grade[sh['clip']]
@@ -604,8 +794,13 @@ def main():
                         f'scale={W}:{H}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p' + (',' + gf if gf else ''))
                 # format=yuv420p: the underwater chain turns 10-bit HEVC (DJI drone) to black - grade in 8 bit
             src, chain = source(s, s['in'], s['out'] - s['in'])
-            flash = ',fade=in:st=0:d=0.18:color=white' if s.get('photo') and not s.get('news') and not s.get('map') else ''
-            inputs, fc, last, idx = list(src), [f'[0:v]{chain},fps={fps},trim=end_frame={n},setpts=PTS-STARTPTS{flash}{tail}[b]'], 'b', 1
+            flash = ',fade=in:st=0:d=0.18:color=white' if s.get('photo') and not s.get('news') and not s.get('map') and not s.get('mask') else ''
+            soft = f",gblur=sigma={s['blur'] * H / 1080:.1f}" if s.get('blur') else ''   # video under laid-over photos: out of focus
+            inputs, fc, last, idx = list(src), [f'[0:v]{chain}{soft},fps={fps},trim=end_frame={n},setpts=PTS-STARTPTS{flash}{tail}[b]'], 'b', 1
+            if s.get('layers'):                               # photos laid over this video shot (render_layers)
+                mv = f'{tmp}/layers_{i}.mov'; render_layers(s, W, H, fps, n, mv)
+                inputs += ['-i', mv]; fc.append(f'[{idx}:v]format=rgba,setpts=PTS-STARTPTS[o{idx}]')
+                fc.append(f'[{last}][o{idx}]overlay=0:0:eof_action=pass[v{idx}]'); last = f'v{idx}'; idx += 1
             xd = s.get('xfade', 0) if i > 0 else 0
             if xd:                                            # dissolve: previous shot keeps running under this one, fading out
                 prev = shots[i - 1]; pa, pch = source(prev, prev['out'], xd)
@@ -656,6 +851,9 @@ def main():
                 if m_ > 0: seg[at:at + m_] += sfx[:m_]
             elif s.get('photo') and not s.get('news'):
                 sfx = shutter(SR); seg[:len(sfx)] += sfx[:ns]
+            for L in s.get('layers', []):                      # each photo laid over the video clicks in
+                if L.get('photo') and int(L['at'] * SR) < ns:
+                    sfx = shutter(SR); at = int(L['at'] * SR); seg[at:at + len(sfx)] += sfx[:ns - at]
             if s.get('bed'):
                 bw = f'{tmp}/bed{i:04d}.wav'
                 run([FF, '-y', '-ss', f"{s['bed']['in']:.3f}", '-t', f'{n / fps:.3f}', '-i', clips[s['bed']['clip']]['path'], '-vn', '-ac', '2', '-ar', str(SR), '-c:a', 'pcm_s16le', bw])

@@ -25,7 +25,7 @@
     b.photo('p084', 3.0, caption='TARSIER · LOBOC')
     b.save('edl/full.json')
 """
-import difflib, json, math, os, re, datetime
+import copy, difflib, json, math, os, re, datetime
 
 # Narration pacing, measured 2026-10-19: the user reads at 4.0-4.6 syllables/s; a reference creator's narration runs
 # 4.7/s overall with 0.4-0.6 s between sentences. The old timing (chars/4.2 + 0.7 s per line, + 0.6 s between lines)
@@ -182,6 +182,15 @@ class Builder:
         p = self.photos[pid]; self._check(pid, 0, dur, back); kw = self._soften(pid, kw)
         self.e['shots'].append(dict(clip=pid, photo=p['file'], caption=caption, **{'in': 0.0, 'out': round(dur, 3)}, audio='mute', note=note or 'photo', **kw))
         return self._placed()
+
+    def _layers(self, layers):
+        """Layers for render_preview.render_layers: photo ids become files, and a photo used here is used up like a shot."""
+        out = []
+        for L in copy.deepcopy(layers):
+            if L.get('photo'):
+                self._check(L['photo'], 0, 1, back=True); L['photo'] = self.photos[L['photo']]['file']
+            out.append(L)
+        return out
 
     def map(self, stops, leg, dur=3.6, box=None, land=None, note='', **kw):
         """Route map shot (render_preview.render_map): `stops` [[lon, lat, name, how]], the line is drawn from stop
@@ -465,7 +474,8 @@ class Builder:
             extra = (dict(first_kw, **({'xfade': xfade} if xfade else {}))) if first is None else {}
             if 'photo' in it:
                 bed = beds[k] if beds else None
-                if it.get('news'): extra = dict(extra, news=it['news'])     # paper-clipping card (render_preview.render_still)
+                if it.get('news'): extra = dict(extra, news=copy.deepcopy(it['news']))     # paper-clipping card (render_preview.render_still)
+                if it.get('mask'): extra = dict(extra, mask=it['mask'])     # window moving on the beats (render_still)
                 i = self.photo(it['photo'], it['len'], caption=it.get('caption'), bed=bed, back=back, **extra)
             else:
                 clip, a, d = it['clip'], it.get('at'), it['len']
@@ -473,10 +483,20 @@ class Builder:
                 elif a is None: a = self.steady(clip, d, it.get('lo', 0.0), it.get('hi'))   # lo / hi: where in the clip to look
                 if it.get('aerial'): extra = dict(extra, aerial=it['aerial'])
                 if it.get('bed'): extra = dict(extra, bed=it['bed'])            # natural sound under a silent shot
+                if it.get('layers'):                                            # photos laid over it (render_layers)
+                    extra = dict(extra, layers=self._layers(it['layers']), dim=it.get('dim', 0.0), **({'blur': it['blur']} if it.get('blur') else {}))
                 i = self.shot(clip, a, a + d, audio=it['audio'], note=it.get('note', 'VO B-roll'), back=back,
                               motion_ok=it.get('motion_ok', motion_ok), **extra)
             first = i if first is None else first
         durs = [self.dur(k) for k in range(first, self.n)]
+        # marks on a screenshot and photos laid over a shot can be pinned to the words too (`on=`): they land as the
+        # line says them, in seconds into their own shot (`lag` shifts them)
+        for k in range(first, self.n):
+            s = self.e['shots'][k]; t0 = sum(durs[:k - first])
+            for x in (s.get('news') or {}).get('marks', []) + s.get('layers', []):
+                if 'on' in x: x['at'] = round(anchor(x.pop('on'), t0 - 0.3) + 0.25 - t0 + x.pop('lag', 0.0), 2)
+                if not 0 <= x['at'] < durs[k - first] - 0.3:
+                    raise EditError(f"shot {k} ({s['clip']}): a mark / layer at {x['at']:.1f}s falls outside the shot ({durs[k - first]:.1f}s)")
         def where(t):                                   # block time -> (shot, seconds into it)
             acc, k = 0.0, 0
             while k < len(durs) - 1 and acc + durs[k] <= t + 1e-6: acc += durs[k]; k += 1
@@ -540,6 +560,8 @@ class Builder:
         text = [(start[s['shot']] + s['from'] - sh[s['shot']]['in'], start[s['shot']] + s['to'] - sh[s['shot']]['in'], s['text']) for s in self.e['subtitles']]
         text += [(start[v['shot']] + v['at'], start[v['shot']] + v['at'] + v['dur'], v['text']) for v in self.e['vo']]
         errs = []
+        # no yellow 花字 labels: the user had every one of them removed and the rule dropped (Bali v8, 2026-10-27)
+        errs += [f"yellow label '{c['text']}': the user does not want 花字 labels (kind='pop')" for c in self.e['cards'] if c.get('kind') == 'pop']
         for c in self.e['cards']:
             if c.get('kind') not in ('chapter', 'title', 'end'): continue
             a = start[c['shot']] + c['at']; b = a + c['dur']

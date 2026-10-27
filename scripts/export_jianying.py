@@ -10,7 +10,8 @@ Jianying cannot do what the renderer does, so everything Jianying has no equival
   画面          each shot pre-graded (film look + per-clip underwater correction) with 2 s handles on both sides, so the
                 cut point can still be moved in Jianying; dissolves are Jianying 叠化
   照片          the plain photo fitted on black (no backdrop / border, the user's choice) with a 4.5 % push-in keyframe, 闪白 into it, shutter
-                sound on the 音效 track
+                sound on the 音效 track. Screenshot cards (news, hand-drawn marks), photos seen through a moving window (mask) and
+                photos laid over a video shot (layers) are drawn by the renderer's own code and placed as finished clips
   漏光          the procedural light leak, pre-multiplied on black, on its own track in 滤色 (screen) blend mode
   字幕/标题      the exact PNGs the renderer burns in (size, translucent box, round corners, fonts, positions), with the
                 same fades. An SRT of all lines is written next to the media: 文本 → 导入字幕 gives editable text
@@ -29,7 +30,7 @@ import pyJianYingDraft as jy
 from pyJianYingDraft import TrackType, KeyframeProperty, TransitionType, MixModeType
 import grade
 from render_preview import (text_spans, vo_duration, subtitle_png, card_png, typewriter_png, compose_photo, make_leak, shutter,
-                            AUDIO_GAIN, AMBIENT_NO_MUSIC, DUCK, MUSIC_RMS, SR)
+                            render_still, render_layers, shot_beats, AUDIO_GAIN, AMBIENT_NO_MUSIC, DUCK, MUSIC_RMS, SR)
 
 ROOT = os.path.expanduser('~/Movies/JianyingPro/User Data/Projects/com.lveditor.draft')
 MEDIA = os.path.expanduser('~/Movies/JianyingPro/Claude素材')
@@ -112,9 +113,31 @@ def main():
     if not os.path.exists(sh_wav):
         from scipy.io import wavfile; wavfile.write(sh_wav, SR, (shutter(SR) * 32767).astype(np.int16))
     segs = []
+    beats_db = os.path.join(proj, 'ingest', 'beats.json')
     for i, s in enumerate(shots):
         a, d = us(tl[i]), us(ends[i]) - us(tl[i])
-        if s.get('photo'):
+        if s.get('photo') and (s.get('news') or s.get('mask')):     # drawn frame by frame: Jianying gets the finished clip
+            mp4 = out('photos', f"s{i:03d}_{s['clip']}_{'card' if s.get('news') else 'mask'}.mp4")
+            if not os.path.exists(mp4):
+                render_still(s, W, H, fps, 0.0, ends[i] - tl[i], mp4, out('photos'), clips,
+                             shot_beats(edl, tl + [total], i, beats_db) if s.get('mask') else None)
+            seg = jy.VideoSegment(mp4, jy.Timerange(a, d), source_timerange=jy.Timerange(0, d), volume=0.0)
+            if s.get('mask'): script.add_segment(jy.AudioSegment(sh_wav, jy.Timerange(a, us(0.16)), volume=1.0), '音效')
+        elif s.get('layers'):                                          # photos laid over the graded shot, baked in
+            mp4 = out('graded', f"s{i:03d}_{s['clip']}_{s['in']:.2f}_layers.mp4")
+            if not os.path.exists(mp4):
+                mov = mp4[:-4] + '.mov'; render_layers(s, W, H, fps, round((ends[i] - tl[i]) * fps), mov); ga, gp = graded[i]
+                soft = f",gblur=sigma={s['blur'] * H / 1080:.1f}" if s.get('blur') else ''
+                run([FF, '-y', '-ss', f"{s['in'] - ga:.3f}", '-t', f'{ends[i] - tl[i]:.3f}', '-i', gp, '-i', mov, '-filter_complex',
+                     f'[0:v]setpts=PTS-STARTPTS{soft}[b];[1:v]format=rgba[o];[b][o]overlay=0:0:eof_action=pass,format=yuv420p[v]',
+                     '-map', '[v]', '-map', '0:a?', '-c:a', 'aac', '-b:a', '256k', '-c:v', 'libx264', '-preset', 'medium', '-crf', '17', mp4])
+                os.remove(mov)
+            g = AUDIO_GAIN.get(s.get('audio', 'ambient'), 0.12) if clips[s['clip']]['audio'] else 0.0
+            if s.get('audio', 'ambient') == 'ambient' and not music_on[i] and g: g = AMBIENT_NO_MUSIC
+            seg = jy.VideoSegment(mp4, jy.Timerange(a, d), source_timerange=jy.Timerange(0, d), volume=g)
+            for L in s['layers']:
+                if L.get('photo'): script.add_segment(jy.AudioSegment(sh_wav, jy.Timerange(a + us(L['at']), us(0.16)), volume=1.0), '音效')
+        elif s.get('photo'):
             png = out('photos', os.path.splitext(os.path.basename(s['photo']))[0] + ('_cap' if s.get('caption') else '') + '_plain.jpg')
             if not os.path.exists(png): compose_photo(s['photo'], W, H, png, s.get('caption'))
             seg = jy.VideoSegment(png, jy.Timerange(a, d), volume=0.0)
@@ -136,7 +159,7 @@ def main():
             bed.add_fade('0.3s', '0.3s'); script.add_segment(bed, '环境声')
     for i, seg in enumerate(segs):
         nxt = shots[i + 1] if i + 1 < len(shots) else None
-        if nxt and nxt.get('photo'): seg.add_transition(TransitionType.闪白, duration=us(0.2))
+        if nxt and nxt.get('photo') and not nxt.get('news') and not nxt.get('mask'): seg.add_transition(TransitionType.闪白, duration=us(0.2))
         elif nxt and nxt.get('xfade'): seg.add_transition(TransitionType.叠化, duration=us(min(nxt['xfade'], 1.0)))
         script.add_segment(seg, '画面')
 

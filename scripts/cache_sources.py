@@ -13,7 +13,8 @@ def main():
     clips = {c['id']: c for c in json.load(open(os.path.join(edl['project'], 'ingest', 'clips.json')))}
     used = ({s['clip'] for s in edl['shots'] if s['clip'] in clips} | {s['bed']['clip'] for s in edl['shots'] if s.get('bed')}
             | {s['news']['bg'][0] for s in edl['shots'] if (s.get('news') or {}).get('bg')})
-    paths = sorted({clips[c]['path'] for c in used if c in clips} | {s['photo'] for s in edl['shots'] if s.get('photo')})
+    paths = sorted({clips[c]['path'] for c in used if c in clips} | {s['photo'] for s in edl['shots'] if s.get('photo')}
+                   | {L['photo'] for s in edl['shots'] for L in s.get('layers', []) if L.get('photo')})   # photos laid over video
     names = [os.path.basename(p) for p in paths]
     if len(set(names)) != len(names): sys.exit('two used files share a file name; the cache keys on the name')
     todo = [p for p in paths if not (os.path.exists(os.path.join(dst, os.path.basename(p)))
