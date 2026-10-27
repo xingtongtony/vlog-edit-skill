@@ -201,15 +201,17 @@ class Builder:
         self.e['shots'].append(dict(clip=clip, **{'in': round(a, 3), 'out': round(b, 3)}, audio=audio, note=note, **kw))
         return self._placed()
 
-    def rendered(self, cid, path, note='', **kw):
+    def rendered(self, cid, path, note='', handle=0.0, **kw):
         """A sequence rendered elsewhere (a designed opening, scripts/opening.py), played as it is: its own picture and
-        sound, no grade. The EDL carries it under 'renders' so the renderer and the Jianying export find it."""
+        sound, no grade. The EDL carries it under 'renders' so the renderer and the Jianying export find it. `handle`
+        seconds are left after its out point, so the next shot can dissolve over them (an xfade shows the previous shot
+        running on past its out point - a rendered file has nothing there unless it is held back)."""
         d = float(subprocess.run(['/opt/homebrew/bin/ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', path],
                                  capture_output=True, text=True, check=True).stdout.strip())
         st = os.stat(path)
         self.clips[cid] = {'id': cid, 'path': path, 'duration': d, 'audio': True, 'kind': 'render', 'name': os.path.basename(path), 'time': ''}
         self.e.setdefault('renders', {})[cid] = {'path': path, 'duration': d}
-        self.e['shots'].append(dict(clip=cid, **{'in': 0.0, 'out': round(d - 0.05, 3)}, audio='live', grade='none', note=note or 'rendered',
+        self.e['shots'].append(dict(clip=cid, **{'in': 0.0, 'out': round(d - 0.05 - handle, 3)}, audio='live', grade='none', note=note or 'rendered',
                                     src=f'{st.st_size}-{int(st.st_mtime)}', **kw))      # src: a re-rendered file re-renders the shot
         return self._placed()
 
