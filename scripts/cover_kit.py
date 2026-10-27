@@ -36,8 +36,9 @@ class Kit:
         dst = os.path.join(self.out, 'frames', f'{clip}_{t}.png')
         if not os.path.exists(dst):
             src = self.clips[clip]['path']; g = grade.clip_filter(src, [t - 1, t, t + 1], look='film')
+            # format=yuv420p: graded in 10 bit, DJI drone HEVC comes out black (same fix as render_preview.py)
             subprocess.run([FF, '-nostdin', '-loglevel', 'error', '-y', '-ss', str(t), '-i', src, '-frames:v', '1']
-                           + (['-vf', g] if g else []) + [dst], check=True)
+                           + (['-vf', 'format=yuv420p,' + g] if g else []) + [dst], check=True)
         return Image.open(dst).convert('RGB')
 
     def subject(self, clip, t, mode='subject'):
@@ -92,13 +93,18 @@ def text(img, xy, s, f, fill=WHITE, track=0, anchor='l', alpha=255):
     for c in s: d.text((x, y), c, font=f, fill=alpha); x += f.getlength(c) + track
     img.paste(fill, (0, 0), lay)
 
-def hero(img, s, name, box, fill, track=0, **axes):
-    """The one big word: sized so its ink fills the box width (x0, y0, x1, _), top edge of the ink at y0."""
+def hero(img, s, name, box, fill, track=0, max_h=None, **axes):
+    """The one big word: sized so its ink fills the box width (x0, y0, x1, _), top edge of the ink at y0.
+    A short word (BALI) at full width is taller than a strip: with max_h it keeps that height and the letters
+    spread out to the width instead."""
     x0, y0, x1, _ = box; size = 400
     for _ in range(3):
         f = font(name, size, **axes); l, t, r, b = f.getbbox(s); ink = r - l + track * (len(s) - 1)
         size = int(size * (x1 - x0) / ink)
     f = font(name, size, **axes); l, t, r, b = f.getbbox(s)
+    if max_h and b - t > max_h:
+        f = font(name, int(size * max_h / (b - t)), **axes); l, t, r, b = f.getbbox(s)
+        ink = width(s[:-1], f) + f.getbbox(s[-1])[2] - l; track = ((x1 - x0) - ink) / max(len(s) - 1, 1)
     text(img, (x0 - l, y0 - t), s, f, fill=fill, track=track)
     return y0 + (b - t)
 
@@ -107,9 +113,10 @@ def series_label(img, s):
     text(img, (W / 2, H - 76), s, font('SmileySans-Oblique.ttf', 40), track=4, anchor='m')
 
 def full_bleed_hero(kit, out, shot, word, color, hero_top=470, cx=0.5, cy=0.5, labels=('', ''), label_color=WHITE,
-                    title='', subtitle='', hero_font='Anton-Regular.ttf', cut='subject'):
+                    title='', subtitle='', hero_font='Anton-Regular.ttf', cut='subject', title_corner='bl'):
     """One picture, a huge word behind the subject (a turtle in open blue), tiny labels top left / right,
-    a one-line title and a quiet subtitle at the bottom left."""
+    a title (lines split by \\n) and a quiet subtitle at the bottom left - or, when the subject fills the bottom
+    (the user on the stairs at Kelingking), right-aligned in the open top right ('tr')."""
     clip, t = shot; box = window(kit.frame(clip, t), (W, H), cx=cx, cy=cy)
     pic = kit.frame(clip, t).crop(box).resize((W, H), Image.LANCZOS); img = pic.copy()
     hero(img, word, hero_font, (M - 8, hero_top, W - M + 8, 0), color)
@@ -117,19 +124,22 @@ def full_bleed_hero(kit, out, shot, word, color, hero_top=470, cx=0.5, cy=0.5, l
     small = font('InstrumentSans[wdth,wght].ttf', 24, wght=600)
     if labels[0]: text(img, (M, 70), labels[0], small, fill=label_color, track=7)
     if labels[1]: text(img, (W - M, 70), labels[1], small, fill=label_color, track=7, anchor='r')
-    if title: text(img, (M, H - 210), title, font('LXGWMarkerGothic-Regular.ttf', 60))
-    if subtitle: text(img, (M, H - 122), subtitle, font('ResourceHanRoundedCN-Light.ttf', 28), track=4, alpha=230)
+    lines = title.split('\n') if title else []
+    x, anchor = (M, 'l') if title_corner == 'bl' else (W - M, 'r')
+    y = H - 122 - 88 * len(lines) if title_corner == 'bl' else 150
+    for s in lines: text(img, (x, y), s, font('LXGWMarkerGothic-Regular.ttf', 60), anchor=anchor); y += 88
+    if subtitle: text(img, (x, y), subtitle, font('ResourceHanRoundedCN-Light.ttf', 28), track=4, alpha=230, anchor=anchor)
     img.save(kit.path(out), quality=95)
 
 def triptych_hero(kit, out, strips, word, color, hero_strip=1, inset=70, tag='', series='', hero_font='Anton-Regular.ttf', cut='subject'):
-    """Three full-width strips [(clip, t, cx, cy)]; in one of them a word spanning the strip sits behind the subject
-    (the 'PHUKET' cover). Tiny tag above the word, series name at the bottom."""
+    """Three full-width strips [(clip, t, cx, cy[, zoom])]; in one of them a word spanning the strip sits behind the
+    subject (the 'PHUKET' cover). Tiny tag above the word, series name at the bottom. The word never runs past its strip."""
     img = Image.new('RGB', (W, H))
-    for k, (clip, t, cx, cy) in enumerate(strips):
-        if k != hero_strip: img.paste(crop(kit.frame(clip, t), (W, SH), cx, cy), (0, k * SH)); continue
-        box = window(kit.frame(clip, t), (W, SH), cx=cx, cy=cy)
+    for k, (clip, t, cx, cy, *z) in enumerate(strips):
+        box = window(kit.frame(clip, t), (W, SH), cx=cx, cy=cy, zoom=z[0] if z else 1.0)
         pic = kit.frame(clip, t).crop(box).resize((W, SH), Image.LANCZOS); img.paste(pic, (0, k * SH))
-        hero(img, word, hero_font, (24, k * SH + inset, W - 24, 0), color)
+        if k != hero_strip: continue
+        hero(img, word, hero_font, (24, k * SH + inset, W - 24, 0), color, max_h=SH - inset - 20)
         if cut: img.paste(pic, (0, k * SH), kit.subject(clip, t, cut).crop(box).resize((W, SH), Image.LANCZOS))
     if tag: text(img, (M, hero_strip * SH + 24), tag, font('InstrumentSans[wdth,wght].ttf', 22, wght=600), track=6)
     if series: series_label(img, series)
@@ -139,7 +149,7 @@ def triptych_signature(kit, out, strips, big, name, name_color=NAVY, strip=1, se
     """Three strips; on a calm area of one strip a rounded 'Vlog' with the place name signing off on its baseline
     in a serif italic (the 'Vlog New Zealand' cover)."""
     img = Image.new('RGB', (W, H))
-    for k, (clip, t, cx, cy) in enumerate(strips): img.paste(crop(kit.frame(clip, t), (W, SH), cx, cy), (0, k * SH))
+    for k, (clip, t, cx, cy, *z) in enumerate(strips): img.paste(crop(kit.frame(clip, t), (W, SH), cx, cy, *z), (0, k * SH))
     vf, nf = font('Fredoka[wdth,wght].ttf', 168, wght=600), font('InstrumentSerif-Italic.ttf', 66)
     l, tp, r, b = vf.getbbox(big); y = strip * SH + 34 - tp; text(img, (M - l, y), big, vf)
     base = y + vf.getmetrics()[0]
