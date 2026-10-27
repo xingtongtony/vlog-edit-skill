@@ -44,10 +44,21 @@ class Kit:
     def subject(self, clip, t, mode='subject'):
         """Vision cut-out of the frame (white = subject). 'subject' takes every salient instance (a turtle, a whole
         diver); 'person' only people - underwater it finds little more than the head."""
-        src = os.path.join(self.out, 'frames', f'{clip}_{t}.png'); self.frame(clip, t)
+        src = os.path.join(self.out, 'frames', f'{clip}_{t}.png'); fr = self.frame(clip, t)
         dst = src[:-4] + f'_mask_{mode}.png'
         if not os.path.exists(dst):
-            subprocess.run(['swift', os.path.join(ROOT, 'scripts', 'subject_mask.swift'), src, dst, mode], check=True, capture_output=True)
+            # Vision works on a small copy of the frame: on a 4K frame it took the sand behind the user's hair along
+            # as hair (Bali, c307). Find the subject on the whole frame, then cut it out again from a crop around it.
+            vision = lambda a, b: subprocess.run(['swift', os.path.join(ROOT, 'scripts', 'subject_mask.swift'), a, b, mode],
+                                                 check=True, capture_output=True)
+            whole, part, part_mask = (src[:-4] + f'_{n}.png' for n in (f'mask_{mode}_whole', 'part', f'part_mask_{mode}'))
+            vision(src, whole)
+            x0, y0, x1, y1 = Image.open(whole).convert('L').point(lambda v: 255 if v > 128 else 0).getbbox()
+            mx, my = (x1 - x0) * 0.15, (y1 - y0) * 0.15
+            box = (int(max(0, x0 - mx)), int(max(0, y0 - my)), int(min(fr.width, x1 + mx)), int(min(fr.height, y1 + my)))
+            fr.crop(box).save(part); vision(part, part_mask)
+            m = Image.new('L', fr.size, 0); m.paste(Image.open(part_mask).convert('L'), box[:2]); m.save(dst)
+            os.remove(part); os.remove(part_mask)
         m = Image.open(dst).convert('L').point(lambda v: 255 if v > 128 else 0)  # hard edge, then a hair of feather
         return m.filter(ImageFilter.GaussianBlur(1.2))
 
